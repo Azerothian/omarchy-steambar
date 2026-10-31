@@ -214,6 +214,9 @@ Panel {
       var n = 0
       for (var m = 0; m < sec.members.length; m++)
         if (sec.members[m].state !== "offline" && sec.members[m].state !== "unknown") n++
+      // With offline friends hidden, a section with nobody online (the
+      // Offline one always) would only be an empty header.
+      if (!showOfflineFriends && n === 0) return
       // While searching, every match shows, minimised group or not.
       var collapsed = !!collapsedGroups[sec.id] && q === ""
       out.push({

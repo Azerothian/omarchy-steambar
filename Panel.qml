@@ -2517,9 +2517,21 @@ Panel {
           horizontalAlignment: Text.AlignHCenter
           verticalAlignment: Text.AlignVCenter
           text: "󰓓"
-          color: root.foreground
+          color: logoMouse.containsMouse ? root.onlineColor : root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.display
+
+          // Click the logo to open Steam.
+          MouseArea {
+            id: logoMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.launch("steam://open/main")
+          }
+          ToolTip.visible: logoMouse.containsMouse
+          ToolTip.delay: 400
+          ToolTip.text: "Open Steam"
         }
 
         Repeater {
@@ -2592,10 +2604,21 @@ Panel {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
             text: "󰓓"
-            color: root.foreground
+            color: headerLogoMouse.containsMouse ? root.onlineColor : root.foreground
             font.family: root.fontFamily
             // As tall as the title and the line under it.
             font.pixelSize: headerText.implicitHeight * 0.95
+
+            MouseArea {
+              id: headerLogoMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.launch("steam://open/main")
+            }
+            ToolTip.visible: headerLogoMouse.containsMouse
+            ToolTip.delay: 400
+            ToolTip.text: "Open Steam"
           }
 
           Column {

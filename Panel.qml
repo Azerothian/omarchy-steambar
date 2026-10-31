@@ -2523,20 +2523,40 @@ Panel {
           visible: root.tab === "library" && root.remoteDevices.length > 0
           spacing: Style.space(4)
 
-          Text {
+          // Minimises and expands like a friend group's header (remembered
+          // with them).
+          Rectangle {
             Layout.fillWidth: true
-            leftPadding: Style.space(2)
-            text: "Remote Play"
-            color: Qt.darker(root.foreground, 1.4)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: true
-            font.letterSpacing: 1
-            font.capitalization: Font.AllUppercase
+            implicitHeight: Style.space(24)
+            radius: Style.space(4)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, remoteHeaderMouse.containsMouse ? 0.06 : 0)
+
+            Text {
+              anchors.fill: parent
+              anchors.leftMargin: Style.space(6)
+              verticalAlignment: Text.AlignVCenter
+              textFormat: Text.PlainText
+              text: (root.collapsedGroups.remoteplay ? "󰅂 " : "󰅀 ") + "REMOTE PLAY  " + root.remoteDevices.length
+              color: Qt.darker(root.foreground, 1.4)
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.2
+            }
+
+            MouseArea {
+              id: remoteHeaderMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.toggleGroup("remoteplay")
+            }
           }
 
           Row {
-            spacing: Style.space(10)
+            visible: !root.collapsedGroups.remoteplay
+            leftPadding: Style.space(6)
+            spacing: Style.space(22)
 
             Repeater {
               model: root.remoteDevices

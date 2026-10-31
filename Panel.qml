@@ -4116,20 +4116,21 @@ Panel {
     }
   }
 
-  // Remote Play in icon mode: the computers as a row of tiles in the list.
+  // Remote Play in icon mode: the computers as a row of icons in the list,
+  // sized and spaced like a friend group's avatars (names on hover).
   Component {
     id: deviceBar
     Item {
       id: db
       readonly property var entry: parent ? parent.entry : null
       width: parent ? parent.width : 0
-      implicitHeight: tiles.implicitHeight + Style.space(6)
+      implicitHeight: Style.space(42)
 
       Row {
-        id: tiles
-        x: Style.space(6)
-        y: Style.space(3)
-        spacing: Style.space(22)
+        anchors.fill: parent
+        anchors.leftMargin: Style.space(6)
+        anchors.topMargin: Style.space(2)
+        spacing: Style.space(6)
 
         Repeater {
           model: db.entry ? db.entry.devices : []
@@ -4138,54 +4139,37 @@ Panel {
           Item {
             id: tile
             required property var modelData
-            width: Style.space(64)
-            height: tileCol.implicitHeight
+            width: Style.space(34)
+            height: Style.space(38)
 
-            Column {
-              id: tileCol
-              width: parent.width
-              spacing: Style.space(2)
-
-              Rectangle {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: Style.space(32)
-                height: width
-                radius: Style.space(4)
-                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, tileMouse.containsMouse ? 0.16 : 0.08)
-                border.width: tileMouse.containsMouse ? 1 : 0
-                border.color: root.foreground
-
-                Text {
-                  anchors.centerIn: parent
-                  text: tileMouse.containsMouse ? "󰐊" : "󰍹"
-                  color: tileMouse.containsMouse ? root.onlineColor : root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.body
-                }
-
-                Rectangle {
-                  width: Style.space(9)
-                  height: width
-                  radius: width / 2
-                  anchors.right: parent.right
-                  anchors.bottom: parent.bottom
-                  anchors.rightMargin: -Style.space(2)
-                  anchors.bottomMargin: -Style.space(2)
-                  color: root.onlineColor
-                  border.width: Style.space(2)
-                  border.color: Color.background
-                }
-              }
+            Rectangle {
+              anchors.centerIn: parent
+              width: Style.space(32)
+              height: width
+              radius: Style.space(4)
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, tileMouse.containsMouse ? 0.16 : 0.08)
+              border.width: tileMouse.containsMouse ? 1 : 0
+              border.color: root.foreground
 
               Text {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                text: tile.modelData.device.name
-                color: tileMouse.containsMouse ? root.foreground : root.dim
+                anchors.centerIn: parent
+                text: tileMouse.containsMouse ? "󰐊" : "󰍹"
+                color: tileMouse.containsMouse ? root.onlineColor : root.foreground
                 font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
+                font.pixelSize: Style.font.body
               }
+            }
+
+            Rectangle {
+              width: Style.space(9)
+              height: width
+              radius: width / 2
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              anchors.bottomMargin: Style.space(1)
+              color: root.onlineColor
+              border.width: Style.space(2)
+              border.color: Color.background
             }
 
             MouseArea {
@@ -4198,7 +4182,7 @@ Panel {
 
             ToolTip.visible: tileMouse.containsMouse
             ToolTip.delay: 300
-            ToolTip.text: "Remote Play " + tile.modelData.device.name + "'s desktop · " + tile.modelData.count + " games to stream"
+            ToolTip.text: tile.modelData.device.name + " · Remote Play its desktop · " + tile.modelData.count + " games to stream"
           }
         }
       }

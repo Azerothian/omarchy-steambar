@@ -21,8 +21,8 @@ A bar widget for [Omarchy](https://omarchy.org)'s shell that puts Steam in a pop
   then This PC and a chip per computer to show only its games (click again for all). Click a game
   to play or stream it, or hover to pick another computer or install here.
 - **Groups**: your Steam group chats (named groups, Steam group chats and chats with several
-  friends), newest first, with unread counts. Open one to read and write in it, switch between its
-  rooms, or pop it out into its own window. Needs Steam's debugging port.
+  friends), newest first, with unread counts. Open one to see its members as avatars (online first),
+  read and write in it, switch between its rooms, or pop it out into its own window. Needs Steam's debugging port.
 - **Downloads**: live progress, speed and time left, with pause/resume. Collapse the section
   with its header or `d`.
 - **Friends**: who's online and what they're playing, with chat in the popup.

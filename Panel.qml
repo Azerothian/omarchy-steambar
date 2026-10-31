@@ -85,6 +85,15 @@ Panel {
 
   // A click opens the chat beside the list; the window button pops it out.
   function chatWith(friend) { openChat(friend) }
+
+  // An avatar clicked (a friend group's icons, a group chat's members):
+  // chat with a friend, or open someone else's Steam profile.
+  function openPerson(person, inWindow) {
+    if (!person) return
+    if (person.isFriend === false) { launch("steam://url/SteamIDPage/" + person.steamid); return }
+    if (inWindow) popOutChat(person)
+    else chatWith(person)
+  }
   // Set by commands that open the popup on a particular tab.
   property bool keepTab: false
 
@@ -1035,6 +1044,7 @@ Panel {
   // Your group chats from the client (steamctl.py groups), newest first.
   property var groupChats: []
   property bool groupsBusy: false
+  property string pendingGroupChat: ""
   readonly property int groupUnread: {
     var n = 0
     for (var i = 0; i < groupChats.length; i++) n += groupChats[i].unread || 0
@@ -1141,6 +1151,11 @@ Panel {
       if (!ok || !Array.isArray(value)) return
       root.groupChats = value
       if (root.chatGroup) root.chatGroup = root.groupById(root.chatGroup.id) || root.chatGroup
+      if (root.pendingGroupChat) {
+        var g = root.groupById(root.pendingGroupChat)
+        root.pendingGroupChat = ""
+        if (g) root.openGroupChat(g)
+      }
     })
   }
 
@@ -1691,12 +1706,13 @@ Panel {
     function video(url: string): void { if (/^https:\/\//.test(url)) root.mainInstance().openVideo(url, 0) }
     function image(url: string): void { if (/^https:\/\//.test(url)) root.mainInstance().openImage(url) }
     function groupchat(id: string): void {
-      var t = root.mainInstance(), g = t.groupById(id)
-      if (!g) return
+      var t = root.mainInstance()
       t.keepTab = true
       t.tab = "groups"
       t.open()
-      t.openGroupChat(g)
+      var g = t.groupById(id)
+      // Not loaded yet (just started): open it when the list arrives.
+      if (g) t.openGroupChat(g); else { t.pendingGroupChat = id; t.refreshGroups() }
     }
     function popout(account: string): void {
       var t = root.mainInstance()
@@ -4111,6 +4127,87 @@ Panel {
     }
   }
 
+  // A person as an avatar: presence dot, unread dot, the game they're
+  // playing in the corner, name and status on hover. Click to chat (or see
+  // the profile of someone who isn't a friend).
+  component AvatarTile: Item {
+    id: quick
+    property var person: null
+    property bool popout: false
+    readonly property bool offline: !!person && (person.state === "offline" || person.state === "unknown")
+    width: Style.space(34)
+    height: Style.space(38)
+
+    ClippingRectangle {
+      anchors.centerIn: parent
+      width: Style.space(32)
+      height: width
+      radius: Style.space(4)
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+      opacity: quick.offline ? 0.4 : 1
+      border.width: quickMouse.containsMouse ? 1 : 0
+      border.color: root.foreground
+
+      Image {
+        anchors.fill: parent
+        source: quick.person ? quick.person.avatar || "" : ""
+        sourceSize.width: 64
+        fillMode: Image.PreserveAspectCrop
+        asynchronous: true
+      }
+
+      // What they're playing, in the corner.
+      Image {
+        visible: status === Image.Ready
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        width: Style.space(14)
+        height: width
+        source: root.gameIcon(quick.person)
+        sourceSize.width: 32
+        fillMode: Image.PreserveAspectCrop
+        asynchronous: true
+      }
+    }
+
+    Rectangle {
+      visible: !quick.offline
+      width: Style.space(9)
+      height: width
+      radius: width / 2
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      anchors.bottomMargin: Style.space(1)
+      color: quick.person ? root.stateColor(quick.person.state) : root.dim
+      border.width: Style.space(2)
+      border.color: Color.background
+    }
+
+    Rectangle {
+      visible: !!quick.person && (quick.person.unread || 0) > 0
+      width: Style.space(9)
+      height: width
+      radius: width / 2
+      anchors.right: parent.right
+      anchors.top: parent.top
+      color: root.inGameColor
+      border.width: Style.space(2)
+      border.color: Color.background
+    }
+
+    MouseArea {
+      id: quickMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.openPerson(quick.person, quick.popout)
+    }
+
+    ToolTip.visible: quickMouse.containsMouse
+    ToolTip.delay: 300
+    ToolTip.text: quick.person ? quick.person.name + " · " + root.friendLine(quick.person) : ""
+  }
+
   // A friend group in icon mode: its friends as one row of avatars, with
   // what they're playing; click one to chat. Scrolls sideways if long.
   Component {
@@ -4131,83 +4228,10 @@ Panel {
         boundsBehavior: Flickable.StopAtBounds
         model: fib.entry ? fib.entry.members : []
 
-          delegate: Item {
-            id: quick
+          delegate: AvatarTile {
             required property var modelData
-            readonly property bool offline: modelData.state === "offline" || modelData.state === "unknown"
-            width: Style.space(34)
-            height: Style.space(38)
-
-            ClippingRectangle {
-              anchors.centerIn: parent
-              width: Style.space(32)
-              height: width
-              radius: Style.space(4)
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-              opacity: quick.offline ? 0.4 : 1
-              border.width: quickMouse.containsMouse ? 1 : 0
-              border.color: root.foreground
-
-              Image {
-                anchors.fill: parent
-                source: quick.modelData.avatar || ""
-                sourceSize.width: 64
-                fillMode: Image.PreserveAspectCrop
-                asynchronous: true
-              }
-
-              // What they're playing, in the corner.
-              Image {
-                visible: status === Image.Ready
-                anchors.left: parent.left
-                anchors.bottom: parent.bottom
-                width: Style.space(14)
-                height: width
-                source: root.gameIcon(quick.modelData)
-                sourceSize.width: 32
-                fillMode: Image.PreserveAspectCrop
-                asynchronous: true
-              }
-            }
-
-            Rectangle {
-              visible: !quick.offline
-              width: Style.space(9)
-              height: width
-              radius: width / 2
-              anchors.right: parent.right
-              anchors.bottom: parent.bottom
-              anchors.bottomMargin: Style.space(1)
-              color: root.stateColor(quick.modelData.state)
-              border.width: Style.space(2)
-              border.color: Color.background
-            }
-
-            Rectangle {
-              visible: (quick.modelData.unread || 0) > 0
-              width: Style.space(9)
-              height: width
-              radius: width / 2
-              anchors.right: parent.right
-              anchors.top: parent.top
-              color: root.inGameColor
-              border.width: Style.space(2)
-              border.color: Color.background
-            }
-
-            MouseArea {
-              id: quickMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.chatWith(quick.modelData)
-            }
-
-            ToolTip.visible: quickMouse.containsMouse
-            ToolTip.delay: 300
-            ToolTip.text: quick.modelData.name + " · " + root.friendLine(quick.modelData)
+            person: modelData
           }
-
       }
     }
   }
@@ -5193,8 +5217,29 @@ Panel {
       return ""
     }
     readonly property string title: group ? group.name : friend ? friend.name : ""
+    // A group chat's members (steamctl.py members), online first.
+    property var members: []
+    property bool membersBusy: false
+    readonly property int membersOnline: members.filter(function(m) { return m.state !== "offline" }).length
+
+    function refreshMembers() {
+      if (!groupId || membersBusy) return
+      membersBusy = true
+      var id = groupId
+      root.runCtl(["members", id], function(ok, value) {
+        cv.membersBusy = false
+        if (ok && Array.isArray(value) && cv.groupId === id) cv.members = value
+      })
+    }
+
+    Timer {
+      interval: 15000
+      running: cv.active && cv.groupId !== ""
+      repeat: true
+      onTriggered: cv.refreshMembers()
+    }
     readonly property bool inputFocused: chatInput.activeFocus
-    onGroupIdChanged: roomId = ""
+    onGroupIdChanged: { roomId = ""; members = []; refreshMembers() }
     property var messages: []
     property string signature: ""
     property bool typing: false
@@ -5364,6 +5409,39 @@ Panel {
           fontFamily: root.fontFamily
           fontSize: Style.font.bodySmall
           onClicked: cv.closeRequested()
+        }
+      }
+
+      // Everyone in the group, as avatars (online first).
+      ColumnLayout {
+        Layout.fillWidth: true
+        visible: !!cv.group && cv.members.length > 0
+        spacing: Style.space(2)
+
+        Text {
+          leftPadding: Style.space(2)
+          text: "MEMBERS  " + cv.membersOnline + "/" + cv.members.length
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 1.2
+        }
+
+        ListView {
+          Layout.fillWidth: true
+          Layout.preferredHeight: Style.space(38)
+          orientation: ListView.Horizontal
+          spacing: Style.space(6)
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          model: cv.members
+
+          delegate: AvatarTile {
+            required property var modelData
+            person: modelData
+            popout: cv.popout
+          }
         }
       }
 

@@ -15,6 +15,7 @@ client's own UI uses. This is how Decky Loader talks to Steam too.
   steamctl.py uninstall <appid>     -> uninstall a game (no confirmation dialog)
   steamctl.py friends               -> friend list with live presence and unread counts
   steamctl.py groups                -> your group chats and their rooms
+  steamctl.py members <group id>    -> everyone in a group chat, online first
   steamctl.py remote                -> other computers online and the games they can stream
   steamctl.py stream <appid> <client id>
                                     -> stream a game from one of them
@@ -640,6 +641,48 @@ GROUPS_JS = """
 })()
 """
 
+# Everyone in a group chat. The client only loads a group's member list
+# while the group is active, so mark it active (telling Steam, as its own
+# chat window does), wait for the list, read it, and let go again.
+MEMBERS_JS = """
+(async () => {
+  const cs = g_FriendsUIApp.ChatStore
+  const g = cs.GetChatRoomGroup("%(group)s")
+  if (!g) throw new Error("That group chat isn't available")
+  const id = g.GetGroupID()
+  cs.IncRefActiveChatRoomGroup(id, true)
+  try {
+    for (let i = 0; i < 20 && !g.m_bFullStateLoaded; i++) await new Promise(r => setTimeout(r, 250))
+    const states = ["offline", "online", "busy", "away", "away", "online", "online"]
+    const rank = { "in-game": 0, online: 1, busy: 2, away: 2, offline: 3 }
+    return Array.from((g.memberList && g.memberList.member_list) || []).map(f => {
+      const p = f.m_persona || {}
+      const appid = p.m_unGamePlayedAppID || 0
+      const inGame = (appid > 0 || (p.m_gameid && p.m_gameid !== "0")) && (p.m_ePersonaState || 0) !== 0
+      let gameIcon = ""
+      try {
+        const icon = String(f.current_game_icon_url || "")
+        gameIcon = /^https:\\/\\//.test(icon) ? icon : ""
+      } catch (e) {}
+      const hash = p.m_strAvatarHash
+      return {
+        accountid: String(f.accountid),
+        steamid: String(f.steamid64 || ""),
+        name: f.display_name || p.m_strPlayerName || String(f.accountid),
+        avatar: hash && !/^0+$/.test(hash) ? "https://avatars.fastly.steamstatic.com/" + hash + "_medium.jpg" : "",
+        state: inGame ? "in-game" : states[p.m_ePersonaState || 0] || "online",
+        game: inGame ? (p.m_strGameExtraInfo || f.current_game_name || "") : "",
+        appid: inGame ? appid : 0,
+        gameIcon: inGame ? gameIcon : "",
+        isFriend: !!f.is_friend,
+      }
+    }).sort((a, b) => (rank[a.state] - rank[b.state]) || a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
+  } finally {
+    cs.DecRefActiveChatRoomGroup(id, true)
+  }
+})()
+"""
+
 # Add or take back your reaction on one message, as Steam's own chat does.
 REACT_JS = """
 (async () => {
@@ -759,6 +802,10 @@ def main(argv):
         return evaluate(SEND_JS % {"target": chat_target(argv[2]), "text": json.dumps(sys.stdin.read())})
     if cmd == "groups":
         return evaluate(GROUPS_JS)
+    if cmd == "members":
+        if not re.fullmatch(r"\d{1,20}", argv[2]):
+            raise ValueError("not a group: %s" % argv[2])
+        return evaluate(MEMBERS_JS % {"group": argv[2]})
     if cmd == "remote":
         return evaluate(REMOTE_JS)
     if cmd == "stream":

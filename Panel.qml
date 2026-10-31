@@ -1239,6 +1239,15 @@ Panel {
               fontSize: Style.font.body
               onClicked: Qt.openUrlExternally(videoWindow.modelData)
             }
+
+            PanelActionButton {
+              iconText: "󰅖"
+              tooltipText: "Close (Esc)"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.body
+              onClicked: root.closeVideo(videoWindow.modelData)
+            }
           }
         }
       }
@@ -1433,6 +1442,15 @@ Panel {
             fontFamily: root.fontFamily
             fontSize: Style.font.body
             onClicked: Qt.openUrlExternally(viewer.modelData)
+          }
+
+          PanelActionButton {
+            iconText: "󰅖"
+            tooltipText: "Close (Esc)"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: root.closeImage(viewer.modelData)
           }
         }
       }

@@ -2517,11 +2517,107 @@ Panel {
           onChanged: function(v) { root.storeKind = v }
         }
 
+        // ---------- Remote Play: your other computers, like the friends bar ----------
+        ColumnLayout {
+          Layout.fillWidth: true
+          visible: root.tab === "library" && root.remoteDevices.length > 0
+          spacing: Style.space(4)
+
+          Text {
+            Layout.fillWidth: true
+            leftPadding: Style.space(2)
+            text: "Remote Play"
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            font.letterSpacing: 1
+            font.capitalization: Font.AllUppercase
+          }
+
+          Row {
+            spacing: Style.space(10)
+
+            Repeater {
+              model: root.remoteDevices
+
+              // A computer: click to Remote Play its desktop.
+              Item {
+                id: pc
+                required property var modelData
+                width: Style.space(64)
+                height: pcCol.implicitHeight
+
+                Column {
+                id: pcCol
+                width: parent.width
+                spacing: Style.space(2)
+
+                Rectangle {
+                  anchors.horizontalCenter: parent.horizontalCenter
+                  width: Style.space(32)
+                  height: width
+                  radius: Style.space(4)
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, pcMouse.containsMouse ? 0.16 : 0.08)
+                  border.width: pcMouse.containsMouse ? 1 : 0
+                  border.color: root.foreground
+
+                  Text {
+                    anchors.centerIn: parent
+                    text: pcMouse.containsMouse ? "󰐊" : "󰍹"
+                    color: pcMouse.containsMouse ? root.onlineColor : root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                  }
+
+                  // Online (only computers Steam can reach are listed).
+                  Rectangle {
+                    width: Style.space(9)
+                    height: width
+                    radius: width / 2
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.rightMargin: -Style.space(2)
+                    anchors.bottomMargin: -Style.space(2)
+                    color: root.onlineColor
+                    border.width: Style.space(2)
+                    border.color: Color.background
+                  }
+                }
+
+                Text {
+                  width: parent.width
+                  horizontalAlignment: Text.AlignHCenter
+                  text: pc.modelData.name
+                  color: pcMouse.containsMouse ? root.foreground : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                }
+
+                }
+
+                MouseArea {
+                  id: pcMouse
+                  // Over the whole tile, icon and name.
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.streamDesktop(pc.modelData)
+                }
+
+                ToolTip.visible: pcMouse.containsMouse
+                ToolTip.delay: 300
+                ToolTip.text: "Remote Play " + pc.modelData.name + "'s desktop"
+              }
+            }
+          }
+        }
+
         // ---------- library filters: one line of chips ----------
         // The options as icons (names on hover), then, with other computers
         // to stream from, a chip per computer: click to show only its games
-        // (again for all), or hover and press ▶ for Remote Play of its
-        // desktop. The wheel scrolls the line sideways if it doesn't fit.
+        // (again for all). The wheel scrolls the line sideways if it doesn't fit.
         Flickable {
           id: chipScroll
           Layout.fillWidth: true
@@ -2601,11 +2697,7 @@ Panel {
                 labelMax: Style.space(84)
                 tip: modelData.name + " · " + count + " games to stream"
                 selected: root.libraryPc === modelData.id
-                actionIcon: "󰐊"
-                actionTip: "Remote Play " + modelData.name + "'s desktop"
-                actionOnHover: true
                 onClicked: root.pickPc(root.libraryPc === modelData.id ? "" : modelData.id)
-                onActionClicked: root.streamDesktop(modelData)
               }
             }
           }

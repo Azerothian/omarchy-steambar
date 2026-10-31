@@ -12,12 +12,12 @@ A bar widget for [Omarchy](https://omarchy.org)'s shell that puts Steam in a pop
   popup: trailers and screenshots, description, reviews, tags, Steam Deck status, system
   requirements and the most helpful reviews. Buying opens Steam.
 - **Recent**: your recently played, installed games. Click to play.
-- **Library**: everything you own, searchable (`/`). One line of chips above the search filters
-  it: **Installed** (on by default, and including games installed on your other computers),
-  **Uninstalled**, **Most played** and **Group by computer** as icons, then, with other computers
-  to stream from (Remote Play), This PC and a chip per computer: click one to show only its games
-  (again for all), or hover and press ▶ to Remote Play its desktop. Click a game to play or stream
-  it, or hover to pick another computer or install here.
+- **Library**: everything you own, searchable (`/`). With other computers signed in to Steam, a
+  **Remote Play** row at the top has a tile per computer: click one to Remote Play its desktop.
+  One line of chips filters the list: **Installed** (on by default, and including games installed
+  on your other computers), **Uninstalled**, **Most played** and **Group by computer** as icons,
+  then This PC and a chip per computer to show only its games (click again for all). Click a game
+  to play or stream it, or hover to pick another computer or install here.
 - **Groups**: your Steam group chats (named groups, Steam group chats and chats with several
   friends), newest first, with unread counts. Open one to read and write in it, switch between its
   rooms, or pop it out into its own window. Needs Steam's debugging port.

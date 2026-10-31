@@ -232,7 +232,9 @@ Panel {
   // several), then everyone else online, then offline. The first row of a
   // section carries its header.
   readonly property var friendRows: {
-    var sections = friendGroups.map(function(g) { return { name: g.name, id: g.id, members: [], icons: iconGroups.indexOf(g.id) >= 0 } })
+    // Groups promoted to icon bars leave the list altogether.
+    var sections = friendGroups.filter(function(g) { return iconGroups.indexOf(g.id) < 0 })
+      .map(function(g) { return { name: g.name, id: g.id, members: [] } })
     var byId = {}
     for (var i = 0; i < sections.length; i++) byId[sections[i].id] = sections[i]
     var online = { name: "Online", id: "online", members: [] }, offline = { name: "Offline", id: "offline", members: [] }
@@ -241,8 +243,10 @@ Panel {
       var f = friends[j], placed = false
       if (q !== "" && [f.name, f.personaName, f.game].join("\n").toLowerCase().indexOf(q) < 0) continue
       var ids = f.groups || []
-      for (var k = 0; k < ids.length; k++)
+      for (var k = 0; k < ids.length; k++) {
         if (byId[ids[k]]) { byId[ids[k]].members.push(f); placed = true }
+        else if (iconGroups.indexOf(ids[k]) >= 0) placed = true   // in its icon bar
+      }
       if (!placed) (f.state === "offline" || f.state === "unknown" ? offline : online).members.push(f)
     }
     var out = []
@@ -252,18 +256,15 @@ Panel {
       for (var m = 0; m < sec.members.length; m++)
         if (sec.members[m].state !== "offline" && sec.members[m].state !== "unknown") n++
       // With offline friends hidden, a section with nobody online (the
-      // Offline one always) would only be an empty header. A group shown as
-      // icons keeps its header here, with its box to put it back.
-      if (!showOfflineFriends && n === 0 && !sec.icons) return
+      // Offline one always) would only be an empty header.
+      if (!showOfflineFriends && n === 0) return
       // While searching, every match shows, minimised group or not.
       var collapsed = !!collapsedGroups[sec.id] && q === ""
       out.push({
         isHeader: true, sectionId: sec.id, name: sec.name, collapsed: collapsed, first: out.length === 0,
-        icons: !!sec.icons,
         count: sec === online ? String(n) : sec === offline ? String(sec.members.length) : n + "/" + sec.members.length,
       })
-      // An icon group's friends are in its bar above the search.
-      if (!collapsed && !sec.icons) out = out.concat(showOfflineFriends ? sec.members : sec.members.filter(function(f) {
+      if (!collapsed) out = out.concat(showOfflineFriends ? sec.members : sec.members.filter(function(f) {
         return f.state !== "offline" && f.state !== "unknown"
       }))
     })
@@ -1079,7 +1080,7 @@ Panel {
 
   function activateRow(item) {
     if (!item) return
-    if (root.tab === "friends" && item.isHeader) { if (!item.icons) toggleGroup(item.sectionId) }
+    if (root.tab === "friends" && item.isHeader) toggleGroup(item.sectionId)
     else if (root.tab === "friends") chatWith(item)
     else if (root.tab === "groups") chatWithGroup(item)
     else if (root.tab === "store" && !item.owned) openStore(item)
@@ -2940,7 +2941,7 @@ Panel {
 
             SettingsNote {
               text: root.friendGroups.length
-                ? "Each as a row of avatars with what they're playing, instead of its friends in the list. Click one to chat. The box on a group's header in the list does the same."
+                ? "Each as a row of avatars with what they're playing, instead of in the list. Click one to chat. The box on a group's header in the list promotes it; untick it here to bring it back."
                 : "Needs Steam's debugging port: your friend groups come from the running client."
             }
 
@@ -4166,8 +4167,7 @@ Panel {
             anchors.rightMargin: Style.space(8)
             verticalAlignment: Text.AlignVCenter
             textFormat: Text.PlainText
-            text: !fc.isHeader ? "" : (fc.entry.icons ? "󰕰 " : fc.entry.collapsed ? "󰅂 " : "󰅀 ")
-              + fc.entry.name.toUpperCase() + "  " + fc.entry.count
+            text: !fc.isHeader ? "" : (fc.entry.collapsed ? "󰅂 " : "󰅀 ") + fc.entry.name.toUpperCase() + "  " + fc.entry.count
             color: Qt.darker(root.foreground, 1.4)
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -4185,10 +4185,10 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             height: parent.height
             label: ""
-            checked: fc.isHeader && !!fc.entry.icons
+            checked: false
             ToolTip.visible: iconsHover.hovered
             ToolTip.delay: 300
-            ToolTip.text: checked ? "Show in the list again" : "Show as icons above the search"
+            ToolTip.text: "Show as icons above the search (undo in Settings)"
             HoverHandler { id: iconsHover }
             foreground: root.foreground
             dim: root.dim

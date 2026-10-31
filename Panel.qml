@@ -4131,23 +4131,33 @@ Panel {
   // that scrolls sideways when it's longer than the space: the wheel or a
   // touchpad scrolls it (only then, so otherwise the list scrolls), and it
   // drags or flicks by mouse or touch.
-  component IconStrip: ListView {
+  component IconStrip: Item {
     id: strip
-    readonly property bool overflows: contentWidth > width + 1
-    orientation: ListView.Horizontal
-    spacing: Style.space(6)
-    clip: true
-    boundsBehavior: Flickable.StopAtBounds
-    flickableDirection: Flickable.HorizontalFlick
-    interactive: overflows
-    ScrollBar.horizontal: ScrollBar { policy: strip.overflows ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+    property alias model: lv.model
+    property alias delegate: lv.delegate
+    readonly property bool overflows: lv.contentWidth > lv.width + 1
 
+    ListView {
+      id: lv
+      anchors.fill: parent
+      orientation: ListView.Horizontal
+      spacing: Style.space(6)
+      clip: true
+      boundsBehavior: Flickable.StopAtBounds
+      flickableDirection: Flickable.HorizontalFlick
+      interactive: strip.overflows
+      ScrollBar.horizontal: ScrollBar { policy: strip.overflows ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+    }
+
+    // On the wrapper, not inside the ListView: there it would sit on the
+    // list's content item and miss the pointer.
     WheelHandler {
+      target: null
       enabled: strip.overflows
       onWheel: function(event) {
         var px = event.pixelDelta.x !== 0 ? event.pixelDelta.x : event.pixelDelta.y
         var d = px !== 0 ? px : (event.angleDelta.x !== 0 ? event.angleDelta.x : event.angleDelta.y) / 3
-        strip.contentX = Math.max(strip.originX, Math.min(strip.originX + strip.contentWidth - strip.width, strip.contentX - d))
+        lv.contentX = Math.max(lv.originX, Math.min(lv.originX + lv.contentWidth - lv.width, lv.contentX - d))
       }
     }
   }

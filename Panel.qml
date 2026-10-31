@@ -678,12 +678,15 @@ Panel {
   // outlined. actionIcon adds a button shown on hover (e.g. Remote Play).
   // The line between the list and the chat or store pane: drag to trade
   // width between them (the popup keeps its size, so it follows the mouse).
+  // Past the list's minimum it widens the popup instead, growing the pane,
+  // at whatever rate keeps the line under the mouse.
   component PaneDivider: MouseArea {
     id: divider
     property string pane: "chat"
     property real startX: 0
     property real startList: 0
     property real startPane: 0
+    property real leftRate: 0
     width: Style.space(12)
     hoverEnabled: true
     cursorShape: Qt.SplitHCursor
@@ -692,12 +695,16 @@ Panel {
       startX = mapToGlobal(mouse.x, mouse.y).x
       startList = root.listWidth
       startPane = pane === "chat" ? root.chatWidth : root.storeWidth
+      leftRate = root.edgeRate("left")
     }
     onPositionChanged: function(mouse) {
       if (!pressed) return
       var total = startList + startPane
       var minPane = pane === "chat" ? root.minChat : root.minStore
-      var list = Math.max(root.minList, Math.min(total - minPane, startList + mapToGlobal(mouse.x, mouse.y).x - startX))
+      var want = startList + mapToGlobal(mouse.x, mouse.y).x - startX
+      var list = Math.max(root.minList, Math.min(total - minPane, want))
+      if (want < root.minList && leftRate > 0)
+        total = Math.min(panel.availableCardWidth, total + (root.minList - want) / leftRate)
       root.dragList = list
       if (pane === "chat") root.dragChat = total - list; else root.dragStore = total - list
     }
@@ -720,16 +727,7 @@ Panel {
     property real startH: 0
     property string target: "list"
     // How fast this edge moves per unit of width, and the bottom per unit of height.
-    function rates() {
-      var x = panel.cardOrigin.x, w = panel.contentWidth
-      var leftStuck = x <= panel.margin + 1, rightStuck = x + w >= panel.screenW - panel.margin - 1
-      var along = panel.barPos === "top" || panel.barPos === "bottom"
-      var r = side === "right"
-        ? (panel.barPos === "left" ? 1 : panel.barPos === "right" ? 0 : rightStuck ? 0 : leftStuck ? 1 : 0.5)
-        : (panel.barPos === "right" ? 1 : panel.barPos === "left" ? 0 : leftStuck ? 0 : rightStuck ? 1 : 0.5)
-      var h = panel.barPos === "top" ? 1 : panel.barPos === "bottom" ? 0 : 0.5
-      return { width: along || panel.barPos === "left" || panel.barPos === "right" ? r : 0, height: h }
-    }
+    function rates() { return { width: root.edgeRate(side), height: root.edgeRate("bottom") } }
     visible: root.opened && rates().width > 0
     width: Style.space(16)
     height: width
@@ -1091,6 +1089,17 @@ Panel {
   property real dragChat: -1
   property real dragStore: -1
   property real dragHeight: -1
+
+  // How far the popup's left or right edge moves per unit of width (1, ½
+  // or 0): it's centred under its bar button and kept on screen. And how
+  // far its bottom moves per unit of height.
+  function edgeRate(side) {
+    var x = panel.cardOrigin.x, w = panel.contentWidth
+    var leftStuck = x <= panel.margin + 1, rightStuck = x + w >= panel.screenW - panel.margin - 1
+    if (side === "bottom") return panel.barPos === "top" ? 1 : panel.barPos === "bottom" ? 0 : 0.5
+    if (side === "right") return panel.barPos === "left" ? 1 : panel.barPos === "right" ? 0 : rightStuck ? 0 : leftStuck ? 1 : 0.5
+    return panel.barPos === "right" ? 1 : panel.barPos === "left" ? 0 : leftStuck ? 0 : rightStuck ? 1 : 0.5
+  }
 
   // A drag ended: keep the new sizes.
   function finishResize() {

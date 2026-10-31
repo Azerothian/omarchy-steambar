@@ -949,22 +949,35 @@ Panel {
   function streamable(game) { return !!game && !game.installed && (remoteApps[String(game.appid)] || []).length > 0 }
 
   // Remote Play another computer's whole desktop.
+  // Remote Play wakes another computer, so it asks first: these set what's
+  // being asked about, and the dialog's Start runs it.
+  property var pendingStream: null
+
   function streamDesktop(device) {
-    if (!device) return
+    if (device) pendingStream = { device: device, game: null }
+  }
+
+  function streamGame(game, device) {
+    if (game && device) pendingStream = { device: device, game: game }
+  }
+
+  function confirmStream() {
+    var p = pendingStream
+    pendingStream = null
+    if (!p) return
     actionError = ""
-    runCtl(["desktop", device.id], function(ok, value, error) {
-      if (!ok) root.actionError = "Couldn't start Remote Play on " + device.name + ": " + error
+    if (p.game) runCtl(["stream", String(p.game.appid), p.device.id], function(ok, value, error) {
+      if (!ok) root.actionError = "Couldn't stream " + p.game.name + ": " + error
+    })
+    else runCtl(["desktop", p.device.id], function(ok, value, error) {
+      if (!ok) root.actionError = "Couldn't start Remote Play on " + p.device.name + ": " + error
     })
     close()
   }
 
-  function streamGame(game, device) {
-    if (!game || !device) return
-    actionError = ""
-    runCtl(["stream", String(game.appid), device.id], function(ok, value, error) {
-      if (!ok) root.actionError = "Couldn't stream " + game.name + ": " + error
-    })
-    close()
+  function cancelStream() {
+    pendingStream = null
+    keyCatcher.forceActiveFocus()
   }
   // steam.py caches the lists for an hour, so this is cheap to call often.
   function refreshStoreLists() { if (!storeListsProc.running) storeListsProc.running = true }
@@ -1879,7 +1892,7 @@ Panel {
   }
 
   onOpenedChanged: {
-    if (!opened) { armedUninstall = 0; chatFriend = null; chatGroup = null; closeStore() }
+    if (!opened) { armedUninstall = 0; chatFriend = null; chatGroup = null; pendingStream = null; closeStore() }
     if (!opened && Date.now() < reopenUntil) { reopenTimer.restart(); return }
     if (opened && reopening) { reopening = false; return }
     if (opened) {
@@ -2461,10 +2474,109 @@ Panel {
     ResizeGrip { side: "left"; anchors.left: parent.left; anchors.bottom: parent.bottom; z: 20 }
     ResizeGrip { side: "right"; anchors.right: parent.right; anchors.bottom: parent.bottom; z: 20 }
 
+    // Asks before Remote Play starts (a computer's desktop or a game).
+    Rectangle {
+      anchors.fill: parent
+      z: 50
+      visible: !!root.pendingStream
+      color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 0.75)
+      onVisibleChanged: if (visible) streamDialog.forceActiveFocus()
+
+      // Clicking outside the dialog cancels.
+      MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.AllButtons
+        onClicked: root.cancelStream()
+      }
+
+      Rectangle {
+        id: streamDialog
+        anchors.centerIn: parent
+        width: Math.min(parent.width - Style.space(40), Style.space(320))
+        height: dialogCol.implicitHeight + Style.space(28)
+        radius: Style.space(8)
+        color: Color.background
+        border.width: 1
+        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
+        focus: true
+
+        Keys.onPressed: function(event) {
+          if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.confirmStream()
+          else if (event.key === Qt.Key_Escape) root.cancelStream()
+          else return
+          event.accepted = true
+        }
+
+        MouseArea { anchors.fill: parent }
+
+        ColumnLayout {
+          id: dialogCol
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.margins: Style.space(14)
+          spacing: Style.space(8)
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: !root.pendingStream ? "" : root.pendingStream.game
+              ? "Stream " + root.pendingStream.game.name + "?"
+              : "Remote Play " + root.pendingStream.device.name + "?"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.bold: true
+            wrapMode: Text.Wrap
+          }
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: !root.pendingStream ? "" : root.pendingStream.game
+              ? "Starts it on " + root.pendingStream.device.name + " and streams it here."
+              : "Streams " + root.pendingStream.device.name + "'s desktop here."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.Wrap
+          }
+
+          RowLayout {
+            Layout.fillWidth: true
+            Layout.topMargin: Style.space(4)
+            spacing: Style.space(8)
+
+            Item { Layout.fillWidth: true }
+
+            Button {
+              text: "Cancel"
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.cancelStream()
+            }
+
+            Button {
+              text: "Start"
+              iconText: "󰐊"
+              bordered: true
+              selected: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.confirmStream()
+            }
+          }
+        }
+      }
+    }
+
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: filterField.activeFocus || chatView.inputFocused || apiKeyField.activeFocus || driveField.activeFocus
+      blocked: filterField.activeFocus || chatView.inputFocused || apiKeyField.activeFocus || driveField.activeFocus || !!root.pendingStream
       onMoveRequested: function(dx, dy) {
         if (dx !== 0 && root.storeOpen) root.stepMedia(dx)
         else if (dx !== 0) root.switchTab(dx)

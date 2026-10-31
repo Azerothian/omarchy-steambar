@@ -1035,6 +1035,10 @@ def store_page(appid):
 
 
 if __name__ == "__main__":
+    import demo
+    if demo.ACTIVE:
+        demo.ensure_built()
+        demo.patch(sys.modules[__name__], "steam")
     mode = sys.argv[1] if len(sys.argv) > 1 else "games"
     try:
         result = (store_page(int(sys.argv[2])) if mode == "store"

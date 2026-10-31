@@ -804,6 +804,10 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    import demo
+    if demo.ACTIVE:
+        demo.ensure_built()
+        demo.patch(sys.modules[__name__], "steamctl")
     try:
         out = json.dumps({"ok": True, "value": main(sys.argv)})
         if len(out) > MAX_OUTPUT:

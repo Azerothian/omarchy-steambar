@@ -117,6 +117,35 @@ Local Steam files (library, playtime, friends list, downloads) and, over HTTPS, 
 store and community endpoints. Store lists are cached for an hour and store pages for six hours
 in `~/.cache/blip-steam`. Prices are in US dollars.
 
+## Demo mode
+
+[`screenshots/demo.mp4`](screenshots/demo.mp4) is the widget running on a made-up account. To try it:
+
+```sh
+cd ~/.config/omarchy/plugins/blip.steam
+python3 -m demo on     # build the demo account and switch the widget to it
+python3 -m demo off    # back to your own Steam
+```
+
+The demo has invented friends, group chats, messages and Remote Play computers, and real store
+games (their art is downloaded once). It lives in `~/.cache/blip-steam-demo`. While it's on, the
+helpers read the demo's Steam folder, answer store requests from the demo's own data, and send
+what they'd send to Steam's debugging port to a stand-in client (`demo/fake_steam.js`, run with
+Node or Bun) instead. Your Steam isn't touched. The switch is a file in `$XDG_RUNTIME_DIR`, so it
+also ends when you log out.
+
+## Tests
+
+```sh
+python3 -m unittest discover -s tests
+```
+
+These use only the standard library, plus Node or Bun for the tests of the scripts sent to Steam.
+They cover the cache, Steam's file formats (text VDF, binary `appinfo.vdf`), the library,
+downloads, friends, store parsing, the debug-port WebSocket, every `steamctl.py` command against
+the stand-in client, and the chat's BBCode handling. They run offline on a throwaway demo account
+and don't touch your Steam or the widget's cache.
+
 ## Update / remove
 
 ```sh

@@ -64,8 +64,9 @@ entry in `~/.config/omarchy/shell.json`:
   to (text matched against your Steam library folders' paths, e.g. `GAMES` for
   `/run/media/you/GAMES/SteamLibrary`; empty uses Steam's default).
 - **Friends and chat**: show offline friends, Steam names beside nicknames, open chats in their own
-  window, the time on each message, and one friend group to show as a row of avatars above the
-  friends search (with what they're playing; click to chat).
+  window, the time on each message, and which friend groups to show as rows of avatars above the
+  friends search instead of in the list (with what they're playing; click to chat). The **Icons**
+  box on a group's header does the same.
 - **Cache**: clear what's kept in `~/.cache/blip-steam`.
 
 ## Keys

@@ -61,18 +61,28 @@ Panel {
   readonly property bool showSteamNames: pref("showSteamNames", true) !== false
   readonly property bool chatInWindow: pref("chatInWindow", false) === true
   readonly property bool showMessageTimes: pref("showMessageTimes", true) !== false
-  // A group shown as a row of avatars above the friends search ("" for none).
-  readonly property string quickGroup: String(pref("quickGroup", "") || "")
-  readonly property var quickGroupInfo: {
-    for (var i = 0; i < friendGroups.length; i++) if (friendGroups[i].id === quickGroup) return friendGroups[i]
-    return null
+  // Groups shown as rows of avatars above the friends search instead of in
+  // the list (the box on a group's header). Saved as space-separated ids.
+  readonly property var iconGroups: {
+    var v = pref("iconGroups", null)
+    if (v === null) v = pref("quickGroup", "")   // the earlier single-group setting
+    if (typeof v === "string") v = v.split(/\s+/)
+    return Array.isArray(v) ? v.map(String).filter(function(id) { return id !== "" }) : []
   }
-  readonly property var quickMembers: {
-    if (!quickGroupInfo) return []
-    return friends.filter(function(f) {
-      return (f.groups || []).indexOf(quickGroup) >= 0
-        && (showOfflineFriends || (f.state !== "offline" && f.state !== "unknown"))
-    })
+  readonly property var iconBars: friendGroups.filter(function(g) { return iconGroups.indexOf(g.id) >= 0 }).map(function(g) {
+    return {
+      group: g,
+      members: friends.filter(function(f) {
+        return (f.groups || []).indexOf(g.id) >= 0
+          && (showOfflineFriends || (f.state !== "offline" && f.state !== "unknown"))
+      })
+    }
+  })
+
+  function toggleIconGroup(id) {
+    var list = iconGroups.slice(), at = list.indexOf(id)
+    if (at >= 0) list.splice(at, 1); else list.push(id)
+    keepScroll(function() { savePref("iconGroups", list) })
   }
 
   // The icon of the game a friend is playing: your library's copy when you
@@ -222,7 +232,8 @@ Panel {
   // several), then everyone else online, then offline. The first row of a
   // section carries its header.
   readonly property var friendRows: {
-    var sections = friendGroups.map(function(g) { return { name: g.name, id: g.id, members: [] } })
+    var sections = friendGroups.filter(function(g) { return iconGroups.indexOf(g.id) < 0 })
+      .map(function(g) { return { name: g.name, id: g.id, members: [] } })
     var byId = {}
     for (var i = 0; i < sections.length; i++) byId[sections[i].id] = sections[i]
     var online = { name: "Online", id: "online", members: [] }, offline = { name: "Offline", id: "offline", members: [] }
@@ -231,8 +242,10 @@ Panel {
       var f = friends[j], placed = false
       if (q !== "" && [f.name, f.personaName, f.game].join("\n").toLowerCase().indexOf(q) < 0) continue
       var ids = f.groups || []
-      for (var k = 0; k < ids.length; k++)
+      for (var k = 0; k < ids.length; k++) {
         if (byId[ids[k]]) { byId[ids[k]].members.push(f); placed = true }
+        else if (iconGroups.indexOf(ids[k]) >= 0) placed = true   // shown in its icon bar
+      }
       if (!placed) (f.state === "offline" || f.state === "unknown" ? offline : online).members.push(f)
     }
     var out = []
@@ -2211,110 +2224,138 @@ Panel {
           onChanged: function(v) { root.storeKind = v }
         }
 
-        // ---------- icon bar: one group's friends at a glance ----------
-        ColumnLayout {
-          Layout.fillWidth: true
-          visible: root.tab === "friends" && root.quickMembers.length > 0
-          spacing: Style.space(4)
+        // ---------- icon bars: groups' friends at a glance ----------
+        Repeater {
+          model: root.tab === "friends" ? root.iconBars : []
 
-          Text {
+          ColumnLayout {
+            id: iconBar
+            required property var modelData
             Layout.fillWidth: true
-            leftPadding: Style.space(2)
-            text: root.quickGroupInfo ? root.quickGroupInfo.name : ""
-            color: Qt.darker(root.foreground, 1.4)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: true
-            font.letterSpacing: 1
-            font.capitalization: Font.AllUppercase
-            elide: Text.ElideRight
-          }
+            spacing: Style.space(4)
 
-          ListView {
-            id: quickBar
-            Layout.fillWidth: true
-            Layout.preferredHeight: Style.space(38)
-            orientation: ListView.Horizontal
-            spacing: Style.space(6)
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
-            model: root.quickMembers
+            RowLayout {
+              Layout.fillWidth: true
 
-            delegate: Item {
-              id: quick
-              required property var modelData
-              readonly property bool offline: modelData.state === "offline" || modelData.state === "unknown"
-              width: Style.space(34)
-              height: Style.space(38)
+              Text {
+                Layout.fillWidth: true
+                leftPadding: Style.space(2)
+                text: iconBar.modelData.group.name
+                color: Qt.darker(root.foreground, 1.4)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1
+                font.capitalization: Font.AllUppercase
+                elide: Text.ElideRight
+              }
 
-              ClippingRectangle {
-                anchors.centerIn: parent
-                width: Style.space(32)
-                height: width
-                radius: Style.space(4)
-                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-                opacity: quick.offline ? 0.4 : 1
-                border.width: quickMouse.containsMouse ? 1 : 0
-                border.color: root.foreground
+              FilterTick {
+                implicitHeight: Style.space(20)
+                label: "Icons"
+                checked: true
+                foreground: root.foreground
+                dim: root.dim
+                fontFamily: root.fontFamily
+                onToggled: root.toggleIconGroup(iconBar.modelData.group.id)
+              }
+            }
 
-                Image {
-                  anchors.fill: parent
-                  source: quick.modelData.avatar || ""
-                  sourceSize.width: 64
-                  fillMode: Image.PreserveAspectCrop
-                  asynchronous: true
-                }
+            Text {
+              visible: iconBar.modelData.members.length === 0
+              leftPadding: Style.space(2)
+              text: "Nobody online"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
 
-                // What they're playing, in the corner.
-                Image {
-                  visible: status === Image.Ready
-                  anchors.left: parent.left
-                  anchors.bottom: parent.bottom
-                  width: Style.space(14)
+            ListView {
+              visible: iconBar.modelData.members.length > 0
+              Layout.fillWidth: true
+              Layout.preferredHeight: Style.space(38)
+              orientation: ListView.Horizontal
+              spacing: Style.space(6)
+              clip: true
+              boundsBehavior: Flickable.StopAtBounds
+              model: iconBar.modelData.members
+
+              delegate: Item {
+                id: quick
+                required property var modelData
+                readonly property bool offline: modelData.state === "offline" || modelData.state === "unknown"
+                width: Style.space(34)
+                height: Style.space(38)
+
+                ClippingRectangle {
+                  anchors.centerIn: parent
+                  width: Style.space(32)
                   height: width
-                  source: root.gameIcon(quick.modelData)
-                  sourceSize.width: 32
-                  fillMode: Image.PreserveAspectCrop
-                  asynchronous: true
+                  radius: Style.space(4)
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                  opacity: quick.offline ? 0.4 : 1
+                  border.width: quickMouse.containsMouse ? 1 : 0
+                  border.color: root.foreground
+
+                  Image {
+                    anchors.fill: parent
+                    source: quick.modelData.avatar || ""
+                    sourceSize.width: 64
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                  }
+
+                  // What they're playing, in the corner.
+                  Image {
+                    visible: status === Image.Ready
+                    anchors.left: parent.left
+                    anchors.bottom: parent.bottom
+                    width: Style.space(14)
+                    height: width
+                    source: root.gameIcon(quick.modelData)
+                    sourceSize.width: 32
+                    fillMode: Image.PreserveAspectCrop
+                    asynchronous: true
+                  }
                 }
-              }
 
-              Rectangle {
-                visible: !quick.offline
-                width: Style.space(9)
-                height: width
-                radius: width / 2
-                anchors.right: parent.right
-                anchors.bottom: parent.bottom
-                anchors.bottomMargin: Style.space(1)
-                color: root.stateColor(quick.modelData.state)
-                border.width: Style.space(2)
-                border.color: Color.background
-              }
+                Rectangle {
+                  visible: !quick.offline
+                  width: Style.space(9)
+                  height: width
+                  radius: width / 2
+                  anchors.right: parent.right
+                  anchors.bottom: parent.bottom
+                  anchors.bottomMargin: Style.space(1)
+                  color: root.stateColor(quick.modelData.state)
+                  border.width: Style.space(2)
+                  border.color: Color.background
+                }
 
-              Rectangle {
-                visible: (quick.modelData.unread || 0) > 0
-                width: Style.space(9)
-                height: width
-                radius: width / 2
-                anchors.right: parent.right
-                anchors.top: parent.top
-                color: root.inGameColor
-                border.width: Style.space(2)
-                border.color: Color.background
-              }
+                Rectangle {
+                  visible: (quick.modelData.unread || 0) > 0
+                  width: Style.space(9)
+                  height: width
+                  radius: width / 2
+                  anchors.right: parent.right
+                  anchors.top: parent.top
+                  color: root.inGameColor
+                  border.width: Style.space(2)
+                  border.color: Color.background
+                }
 
-              MouseArea {
-                id: quickMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.chatWith(quick.modelData)
-              }
+                MouseArea {
+                  id: quickMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.chatWith(quick.modelData)
+                }
 
-              ToolTip.visible: quickMouse.containsMouse
-              ToolTip.delay: 300
-              ToolTip.text: quick.modelData.name + " · " + root.friendLine(quick.modelData)
+                ToolTip.visible: quickMouse.containsMouse
+                ToolTip.delay: 300
+                ToolTip.text: quick.modelData.name + " · " + root.friendLine(quick.modelData)
+              }
             }
           }
         }
@@ -2781,7 +2822,7 @@ Panel {
 
             Text {
               Layout.topMargin: Style.space(4)
-              text: "Icon bar above the friends search"
+              text: "Groups as icon bars above the friends search"
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -2789,7 +2830,7 @@ Panel {
 
             SettingsNote {
               text: root.friendGroups.length
-                ? "One group's friends as a row of avatars, with what they're playing. Click one to chat."
+                ? "Each as a row of avatars with what they're playing, instead of in the list. Click one to chat. The Icons box on a group's header does the same."
                 : "Needs Steam's debugging port: your friend groups come from the running client."
             }
 
@@ -2799,17 +2840,17 @@ Panel {
               spacing: Style.space(6)
 
               Repeater {
-                model: [{ id: "", name: "None" }].concat(root.friendGroups)
+                model: root.friendGroups
 
                 Button {
                   required property var modelData
                   text: modelData.name
                   bordered: true
-                  selected: root.quickGroup === modelData.id
+                  selected: root.iconGroups.indexOf(modelData.id) >= 0
                   foreground: root.foreground
                   fontFamily: root.fontFamily
                   fontSize: Style.font.caption
-                  onClicked: root.savePref("quickGroup", modelData.id)
+                  onClicked: root.toggleIconGroup(modelData.id)
                 }
               }
             }
@@ -3908,7 +3949,10 @@ Panel {
           implicitHeight: Style.space(24)
 
           Text {
-            anchors.fill: parent
+            anchors.left: parent.left
+            anchors.right: iconsTick.visible ? iconsTick.left : parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
             anchors.leftMargin: Style.space(6)
             anchors.rightMargin: Style.space(8)
             verticalAlignment: Text.AlignVCenter
@@ -3920,6 +3964,22 @@ Panel {
             font.bold: true
             font.letterSpacing: 1.2
             elide: Text.ElideRight
+          }
+
+          // Show this group as an icon bar above the search instead.
+          FilterTick {
+            id: iconsTick
+            visible: fc.isHeader && fc.entry.sectionId !== "online" && fc.entry.sectionId !== "offline"
+            anchors.right: parent.right
+            anchors.rightMargin: Style.space(8)
+            anchors.verticalCenter: parent.verticalCenter
+            height: parent.height
+            label: "Icons"
+            checked: false
+            foreground: root.foreground
+            dim: root.dim
+            fontFamily: root.fontFamily
+            onToggled: root.toggleIconGroup(fc.entry.sectionId)
           }
         }
       }

@@ -834,7 +834,8 @@ Panel {
   }
 
   // Opens the chat in its own window, or brings its window forward
-  // (switching workspace if it's on another) when it's already open.
+  // (switching workspace if it's on another) when it's already open. Any
+  // window opened from the popup closes the popup.
   function popOutChat(friend) {
     if (!friend) return
     var id = String(friend.accountid)
@@ -844,6 +845,7 @@ Panel {
     if (chatFriend) closeChat()
     if (popouts.indexOf(id) < 0) popouts = popouts.concat([id])
     else focusPopout(id)
+    close()
   }
 
   // Copies through wl-copy's stdin, so chat text never shows in a process list.
@@ -873,6 +875,7 @@ Panel {
     videoStarts = starts
     if (videoViewers.indexOf(src) < 0) videoViewers = videoViewers.concat([src])
     else focusWindow(videoTitle(src))
+    close()
   }
 
   function closeVideo(src) {
@@ -889,6 +892,7 @@ Panel {
     Quickshell.execDetached(["sh", "-c",
       "if command -v mpv >/dev/null; then exec mpv --force-window=immediate --title=\"$2\" -- \"$1\"; else exec xdg-open \"$1\"; fi",
       "youtube", "https://www.youtube.com/watch?v=" + card.id, "YouTube · " + (card.title || card.id)])
+    close()
   }
 
   function mediaTime(ms) {
@@ -904,6 +908,7 @@ Panel {
     if (!src) return
     if (imageViewers.indexOf(src) < 0) imageViewers = imageViewers.concat([src])
     else focusWindow(imageTitle(src))
+    close()
   }
 
   function closeImage(src) {
@@ -933,6 +938,7 @@ Panel {
     var key = "g:" + group.id
     if (popouts.indexOf(key) < 0) popouts = popouts.concat([key])
     else focusPopout(key)
+    close()
   }
 
   function focusPopout(accountid) { focusWindow(popoutTitle(accountid)) }

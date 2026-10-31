@@ -56,6 +56,12 @@ While it's on, **any program on your computer can control your Steam client** th
 `localhost:8080`. Without it the widget still works: installs and chat open in Steam, and
 pause/resume is hidden.
 
+## Resizing
+
+Drag a bottom corner of the popup to resize it (the grip shows on the side that can move), and the
+line between the list and an open chat or store page to share the width between them. Sizes are
+kept.
+
 ## Settings
 
 The **Settings** tab (the gear at the end of the menu, or `5`) saves as you go, into this widget's

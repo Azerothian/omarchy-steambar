@@ -667,6 +667,112 @@ Panel {
 
   // A filter as a chip: icon, label, an optional count; selected ones are
   // outlined. actionIcon adds a button shown on hover (e.g. Remote Play).
+  // The line between the list and the chat or store pane: drag to trade
+  // width between them (the popup keeps its size, so it follows the mouse).
+  component PaneDivider: MouseArea {
+    id: divider
+    property string pane: "chat"
+    property real startX: 0
+    property real startList: 0
+    property real startPane: 0
+    width: Style.space(12)
+    hoverEnabled: true
+    cursorShape: Qt.SplitHCursor
+    preventStealing: true
+    onPressed: function(mouse) {
+      startX = mapToGlobal(mouse.x, mouse.y).x
+      startList = root.listWidth
+      startPane = pane === "chat" ? root.chatWidth : root.storeWidth
+    }
+    onPositionChanged: function(mouse) {
+      if (!pressed) return
+      var total = startList + startPane
+      var minPane = pane === "chat" ? root.minChat : root.minStore
+      var list = Math.max(root.minList, Math.min(total - minPane, startList + mapToGlobal(mouse.x, mouse.y).x - startX))
+      root.dragList = list
+      if (pane === "chat") root.dragChat = total - list; else root.dragStore = total - list
+    }
+    onReleased: root.finishResize()
+    onCanceled: root.finishResize()
+  }
+
+  // A corner of the popup: drag to resize it. The popup sits under its bar
+  // button and is kept on screen, so an edge moves 1, ½ or 0 times as fast
+  // as the width changes; the grip measures that when pressed and divides
+  // it out, so the corner stays under the mouse. Grips whose edge can't
+  // move hide. The right grip sizes an open chat/store pane, else the list.
+  component ResizeGrip: MouseArea {
+    id: grip
+    property string side: "right"
+    property real edgeRate: 0
+    property real heightRate: 0
+    property point start
+    property real startW: 0
+    property real startH: 0
+    property string target: "list"
+    // How fast this edge moves per unit of width, and the bottom per unit of height.
+    function rates() {
+      var x = panel.cardOrigin.x, w = panel.contentWidth
+      var leftStuck = x <= panel.margin + 1, rightStuck = x + w >= panel.screenW - panel.margin - 1
+      var along = panel.barPos === "top" || panel.barPos === "bottom"
+      var r = side === "right"
+        ? (panel.barPos === "left" ? 1 : panel.barPos === "right" ? 0 : rightStuck ? 0 : leftStuck ? 1 : 0.5)
+        : (panel.barPos === "right" ? 1 : panel.barPos === "left" ? 0 : leftStuck ? 0 : rightStuck ? 1 : 0.5)
+      var h = panel.barPos === "top" ? 1 : panel.barPos === "bottom" ? 0 : 0.5
+      return { width: along || panel.barPos === "left" || panel.barPos === "right" ? r : 0, height: h }
+    }
+    visible: root.opened && rates().width > 0
+    width: Style.space(16)
+    height: width
+    hoverEnabled: true
+    preventStealing: true
+    cursorShape: side === "right" ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor
+
+    // Two short strokes in the corner.
+    Repeater {
+      model: 2
+      Rectangle {
+        required property int index
+        width: Style.space(index ? 6 : 11)
+        height: 1
+        rotation: grip.side === "right" ? -45 : 45
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.horizontalCenterOffset: (grip.side === "right" ? 1 : -1) * Style.space(index ? 3 : 0)
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.verticalCenterOffset: Style.space(index ? 3 : 0)
+        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, grip.containsMouse || grip.pressed ? 0.8 : 0.3)
+      }
+    }
+
+    onPressed: function(mouse) {
+      var r = rates()
+      edgeRate = r.width
+      heightRate = r.height
+      start = mapToGlobal(mouse.x, mouse.y)
+      target = side === "right" && root.chatOpen ? "chat" : side === "right" && root.storeOpen ? "store" : "list"
+      startW = target === "chat" ? root.chatWidth : target === "store" ? root.storeWidth : root.listWidth
+      startH = panel.contentHeight
+    }
+    onPositionChanged: function(mouse) {
+      if (!pressed) return
+      var g = mapToGlobal(mouse.x, mouse.y)
+      var dx = (g.x - start.x) * (side === "right" ? 1 : -1)
+      var others = panel.contentWidth - (target === "chat" ? root.chatWidth : target === "store" ? root.storeWidth : root.listWidth)
+      var maxW = Math.max(0, panel.availableCardWidth - others)
+      if (edgeRate > 0) {
+        var min = target === "chat" ? root.minChat : target === "store" ? root.minStore : root.minList
+        var w = Math.max(min, Math.min(maxW, startW + dx / edgeRate))
+        if (target === "chat") root.dragChat = w
+        else if (target === "store") root.dragStore = w
+        else root.dragList = w
+      }
+      if (heightRate > 0)
+        root.dragHeight = Math.max(root.minHeight, Math.min(panel.availableCardHeight, startH + (g.y - start.y) / heightRate))
+    }
+    onReleased: root.finishResize()
+    onCanceled: root.finishResize()
+  }
+
   component FilterChip: Rectangle {
     id: chip
     property string icon: ""
@@ -947,7 +1053,33 @@ Panel {
   // Popped-out group chats are "g:<group id>" in popouts.
   property var popoutGroups: ({})
   readonly property real railWidth: Style.space(64)
-  readonly property real listWidth: railTop ? Style.space(410) : railWidth + Style.space(340)
+  // ---------- sizes ----------
+  // The list, chat and store widths and the popup's height: the defaults,
+  // your saved sizes (from dragging the corner grips or the divider beside a
+  // pane), or the size being dragged right now.
+  readonly property real minList: Style.space(300)
+  readonly property real minChat: Style.space(260)
+  readonly property real minStore: Style.space(360)
+  readonly property real minHeight: Style.space(360)
+  property real dragList: -1
+  property real dragChat: -1
+  property real dragStore: -1
+  property real dragHeight: -1
+
+  // A drag ended: keep the new sizes.
+  function finishResize() {
+    var sizes = { listWidth: dragList, chatWidth: dragChat, storeWidth: dragStore, panelHeight: dragHeight }
+    for (var name in sizes) if (sizes[name] >= 0) savePref(name, Math.round(sizes[name]))
+    dragList = dragChat = dragStore = dragHeight = -1
+  }
+
+  function savedSize(name, fallback, min) {
+    var v = Number(pref(name, 0))
+    return Math.max(min, v > 0 ? v : fallback)
+  }
+
+  readonly property real listWidth: dragList >= 0 ? dragList
+    : savedSize("listWidth", railTop ? Style.space(410) : railWidth + Style.space(340), minList)
   readonly property var tabInfo: ({
     store: { icon: "󰓜", label: "Store" },
     recent: { icon: "󰋚", label: "Recent" },
@@ -956,7 +1088,7 @@ Panel {
     groups: { icon: "󰭹", label: "Groups" },
     settings: { icon: "󰒓", label: "Settings" }
   })
-  readonly property real chatWidth: Style.space(330)
+  readonly property real chatWidth: dragChat >= 0 ? dragChat : savedSize("chatWidth", Style.space(330), minChat)
   readonly property int unreadTotal: {
     var n = 0
     for (var i = 0; i < friends.length; i++) n += friends[i].unread || 0
@@ -1156,7 +1288,7 @@ Panel {
   property int mediaIndex: 0
   property bool storeMuted: true
   readonly property bool storeOpen: !!storeGame
-  readonly property real storeWidth: Style.space(460)
+  readonly property real storeWidth: dragStore >= 0 ? dragStore : savedSize("storeWidth", Style.space(460), minStore)
   readonly property var storeMedia: storePage && storePage.media ? storePage.media : []
   readonly property var storeOwned: {
     if (!storeGame) return null
@@ -2305,7 +2437,10 @@ Panel {
     focusTarget: keyCatcher
     // The chat and store panes widen the popup beside the list.
     contentWidth: root.listWidth + (root.chatOpen ? root.chatWidth : root.storeOpen ? root.storeWidth : 0)
-    contentHeight: Style.space(500)
+    contentHeight: root.dragHeight >= 0 ? root.dragHeight : root.savedSize("panelHeight", Style.space(500), root.minHeight)
+
+    ResizeGrip { side: "left"; anchors.left: parent.left; anchors.bottom: parent.bottom; z: 20 }
+    ResizeGrip { side: "right"; anchors.right: parent.right; anchors.bottom: parent.bottom; z: 20 }
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -3192,7 +3327,16 @@ Panel {
           anchors.top: parent.top
           anchors.bottom: parent.bottom
           width: 1
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, chatDivider.containsMouse || chatDivider.pressed ? 0.45 : 0.12)
+        }
+
+        PaneDivider {
+          id: chatDivider
+          pane: "chat"
+          anchors.horizontalCenter: parent.left
+          anchors.horizontalCenterOffset: -panel.padding
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
         }
 
         ChatView {
@@ -3226,7 +3370,16 @@ Panel {
           anchors.top: parent.top
           anchors.bottom: parent.bottom
           width: 1
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, storeDivider.containsMouse || storeDivider.pressed ? 0.45 : 0.12)
+        }
+
+        PaneDivider {
+          id: storeDivider
+          pane: "store"
+          anchors.horizontalCenter: parent.left
+          anchors.horizontalCenterOffset: -panel.padding
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
         }
 
         ColumnLayout {

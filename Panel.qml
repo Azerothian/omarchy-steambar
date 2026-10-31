@@ -758,7 +758,7 @@ Panel {
       edgeRate = r.width
       heightRate = r.height
       start = mapToGlobal(mouse.x, mouse.y)
-      target = side === "right" && root.chatOpen ? "chat" : side === "right" && root.storeOpen ? "store" : "list"
+      target = side === "right" && root.chatShown ? "chat" : side === "right" && root.storeOpen ? "store" : "list"
       startW = target === "chat" ? root.chatWidth : target === "store" ? root.storeWidth : root.listWidth
       startH = panel.contentHeight
     }
@@ -906,7 +906,7 @@ Panel {
     }
   }
 
-  onTabChanged: { if (tab === "groups") refreshGroups(); rowIndex = 0; filterText = ""; filterField.text = ""; armedUninstall = 0; list.positionViewAtBeginning(); if (tab === "store") refreshStoreLists() }
+  onTabChanged: { if (tab === "groups") refreshGroups(); if (!chatShown && chatView.inputFocused) keyCatcher.forceActiveFocus(); rowIndex = 0; filterText = ""; filterField.text = ""; armedUninstall = 0; list.positionViewAtBeginning(); if (tab === "store") refreshStoreLists() }
   onStoreKindChanged: { rowIndex = 0; list.positionViewAtBeginning() }
   onFilterTextChanged: rowIndex = 0
   onMostPlayedChanged: { rowIndex = 0; list.positionViewAtBeginning() }
@@ -1041,6 +1041,9 @@ Panel {
   // A group chat open in the pane instead (one of groupChats).
   property var chatGroup: null
   readonly property bool chatOpen: !!chatFriend || !!chatGroup
+  // The pane shows on its own tab (a friend's on Friends, a group's on
+  // Groups); elsewhere it's tucked away and comes back with the tab.
+  readonly property bool chatShown: (!!chatFriend && tab === "friends") || (!!chatGroup && tab === "groups")
   // Your group chats from the client (steamctl.py groups), newest first.
   property var groupChats: []
   property bool groupsBusy: false
@@ -2452,7 +2455,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     // The chat and store panes widen the popup beside the list.
-    contentWidth: root.listWidth + (root.chatOpen ? root.chatWidth : root.storeOpen ? root.storeWidth : 0)
+    contentWidth: root.listWidth + (root.chatShown ? root.chatWidth : root.storeOpen ? root.storeWidth : 0)
     contentHeight: root.dragHeight >= 0 ? root.dragHeight : root.savedSize("panelHeight", Style.space(500), root.minHeight)
 
     ResizeGrip { side: "left"; anchors.left: parent.left; anchors.bottom: parent.bottom; z: 20 }
@@ -3330,7 +3333,7 @@ Panel {
       // ---------- chat pane ----------
       Item {
         id: chatPane
-        visible: root.chatOpen
+        visible: root.chatShown
         anchors.left: listPane.right
         anchors.leftMargin: panel.padding * 2
         anchors.right: parent.right
@@ -3360,7 +3363,7 @@ Panel {
           anchors.fill: parent
           friend: root.chatFriend
           group: root.chatGroup
-          active: root.opened && root.chatOpen
+          active: root.opened && root.chatShown
           onCloseRequested: root.closeChat()
           onPopOutRequested: root.chatGroup ? root.popOutGroup(root.chatGroup) : root.popOutChat(root.chatFriend)
           onTabPressed: keyCatcher.forceActiveFocus()
@@ -4149,14 +4152,16 @@ Panel {
       ScrollBar.horizontal: ScrollBar { policy: strip.overflows ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
     }
 
-    // On the wrapper, not inside the ListView: there it would sit on the
-    // list's content item and miss the pointer.
-    WheelHandler {
-      target: null
-      enabled: strip.overflows
-      onWheel: function(event) {
-        var px = event.pixelDelta.x !== 0 ? event.pixelDelta.x : event.pixelDelta.y
-        var d = px !== 0 ? px : (event.angleDelta.x !== 0 ? event.angleDelta.x : event.angleDelta.y) / 3
+    // A layer on top that takes only the wheel (clicks and hover go
+    // through to the icons): items on top get the wheel first, before the
+    // ListView, which takes it without moving when it only scrolls sideways.
+    MouseArea {
+      anchors.fill: parent
+      acceptedButtons: Qt.NoButton
+      onWheel: function(wheel) {
+        if (!strip.overflows) { wheel.accepted = false; return }
+        var px = wheel.pixelDelta.x !== 0 ? wheel.pixelDelta.x : wheel.pixelDelta.y
+        var d = px !== 0 ? px : (wheel.angleDelta.x !== 0 ? wheel.angleDelta.x : wheel.angleDelta.y) / 3
         lv.contentX = Math.max(lv.originX, Math.min(lv.originX + lv.contentWidth - lv.width, lv.contentX - d))
       }
     }

@@ -2149,10 +2149,11 @@ Panel {
         id: rail
         anchors.left: parent.left
         anchors.top: parent.top
-        columns: root.railTop ? root.tabOrder.length + 2 : 1
+        // Across the top the logo moves to the header line, beside the title.
+        columns: root.railTop ? root.tabOrder.length + 1 : 1
         spacing: Style.space(4)
         readonly property real tabWidth: root.railTop
-          ? (root.listWidth - panel.padding * 2 - logo.width - spacing * (root.tabOrder.length + 1)) / (root.tabOrder.length + 1)
+          ? (root.listWidth - panel.padding * 2 - spacing * root.tabOrder.length) / (root.tabOrder.length + 1)
           : root.railWidth
         readonly property real tabHeight: root.railTop ? Style.space(48) : Style.space(54)
         readonly property real step: (root.railTop ? tabWidth : tabHeight) + spacing
@@ -2162,14 +2163,15 @@ Panel {
 
         Text {
           id: logo
-          width: root.railTop ? Style.space(34) : root.railWidth
-          height: root.railTop ? rail.tabHeight : Style.space(56)
+          visible: !root.railTop
+          width: root.railWidth
+          height: Style.space(56)
           horizontalAlignment: Text.AlignHCenter
           verticalAlignment: Text.AlignVCenter
           text: "󰓓"
           color: root.foreground
           font.family: root.fontFamily
-          font.pixelSize: root.railTop ? Style.font.title : Style.font.display
+          font.pixelSize: Style.font.display
         }
 
         Repeater {
@@ -2237,8 +2239,22 @@ Panel {
           Layout.fillWidth: true
           Layout.preferredHeight: Style.space(56)
 
-          Column {
+          Text {
+            id: headerLogo
+            visible: root.railTop
             anchors.left: parent.left
+            anchors.verticalCenter: parent.verticalCenter
+            text: "󰓓"
+            color: root.foreground
+            font.family: root.fontFamily
+            // As tall as the title and the line under it.
+            font.pixelSize: headerText.implicitHeight * 0.95
+          }
+
+          Column {
+            id: headerText
+            anchors.left: headerLogo.visible ? headerLogo.right : parent.left
+            anchors.leftMargin: headerLogo.visible ? Style.space(14) : 0
             anchors.right: degradedButton.visible ? degradedButton.left : parent.right
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)

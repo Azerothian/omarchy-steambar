@@ -3,6 +3,8 @@
 
   steam.py games    -> {"user": {...}, "games": [...]}   (recent + library)
   steam.py friends  -> {"friends": [...]}                 (live online status)
+  steam.py friends-cached -> {"friends", "groups", "saved", "collapsed"}  (the last list seen, instantly)
+  steam.py set-collapsed '["3", "offline"]'  -> remember which friend groups are minimised
   steam.py downloads -> {"downloads": [...]}              (active/paused downloads)
   steam.py storelists -> {"top": ..., "upcoming": ..., "new": ...}  (the store's lists, 50 each)
   steam.py store APPID -> {...}                           (a game's store page)
@@ -25,6 +27,7 @@ import threading
 import time
 import urllib.request
 
+import cache
 
 
 def find_steam():
@@ -377,10 +380,22 @@ def friends_from_community(user):
     from each public mini-profile. Steam answers bursts with HTTP 500, so the
     fetches are spaced out and stop at the first refusal; statuses that
     weren't refreshed this round keep their last known value."""
-    cfg = ci(ci(localconfig(user), "UserLocalConfigStore"), "friends")
+    store = ci(localconfig(user), "UserLocalConfigStore")
+    cfg = ci(store, "friends")
+    # The client keeps the nicknames you've given people here (not for
+    # everyone, only those it has cached).
+    nicknames = {}
+    try:
+        cached = json.loads(ci(ci(store, "WebStorage"), "friendstore_playercache") or "[]")
+    except (TypeError, ValueError):
+        cached = []
+    for c in seq(cached, MAX_FRIENDS):
+        if isinstance(c, dict) and str(c.get("steamid", "")).isdigit() and c.get("nickname"):
+            nicknames[str(int(c["steamid"]) - STEAMID64_BASE)] = clip(c["nickname"], MAX_NAME)
     people = []
     for k, v in cfg.items() if isinstance(cfg, dict) else []:
-        if k.isdigit() and isinstance(v, dict) and k != user["accountid"]:
+        # Steam groups (clans) share this block; their ids don't fit in 32 bits.
+        if k.isdigit() and int(k) < 2 ** 32 and isinstance(v, dict) and k != user["accountid"]:
             avatar = ci(v, "avatar")
             if len(people) >= MAX_FRIENDS:
                 break
@@ -392,13 +407,14 @@ def friends_from_community(user):
                           if isinstance(avatar, str) and avatar else "",
             })
 
-    os.makedirs(CACHE, exist_ok=True)
-    cache_path = os.path.join(CACHE, "friends.json")
-    try:
-        with open(cache_path) as f:
-            known = json.load(f)
-    except (OSError, ValueError):
-        known = {}
+    known = cache.load_statuses()
+    if not known:
+        # Statuses saved before the cache moved into SQLite.
+        try:
+            with open(os.path.join(CACHE, "friends.json")) as f:
+                known = obj(json.load(f))
+        except (OSError, ValueError):
+            known = {}
 
     # Oldest-checked first, so a round cut short still makes progress.
     order = sorted(people, key=lambda p: known.get(p["accountid"], {}).get("checked", 0))
@@ -419,11 +435,11 @@ def friends_from_community(user):
         p["game"] = s.get("game", "")
         if s.get("name"):
             p["name"] = s["name"]
+        if nicknames.get(p["accountid"]):
+            p["personaName"] = p["name"] if p["name"] != nicknames[p["accountid"]] else ""
+            p["name"] = nicknames[p["accountid"]]
 
-    tmp = cache_path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(known, f)
-    os.replace(tmp, cache_path)
+    cache.save_statuses(known)
     return people
 
 
@@ -443,9 +459,10 @@ def friends():
         people = friends_from_community(user)
     rank = {"in-game": 0, "online": 1, "busy": 2, "away": 2}
     people.sort(key=lambda p: (rank.get(p["state"], 3), p["name"].lower()))
-    out = {"friends": people, "source": "api" if key and not error else "community"}
+    out = {"friends": people, "groups": [], "source": "api" if key and not error else "community"}
     if error:
         out["error"] = error
+    cache.save_friends(people, [])
     return out
 
 
@@ -507,6 +524,22 @@ def steam_reachable():
         return True
     except Exception:
         return False
+
+
+DEBUG_FLAG = os.path.join(STEAM, ".cef-enable-remote-debugging")
+
+
+def steam_running():
+    """Whether the Steam client is running (native or Flatpak)."""
+    for pid in os.listdir("/proc"):
+        if pid.isdigit():
+            try:
+                with open("/proc/%s/comm" % pid) as f:
+                    if f.read().strip() in ("steam", "steamwebhelper"):
+                        return True
+            except OSError:
+                pass
+    return False
 
 
 def steam_overview():
@@ -609,7 +642,13 @@ def downloads():
     order = {"downloading": 0, "installing": 0, "verifying": 0, "preparing": 0, "queued": 1, "paused": 2}
     out.sort(key=lambda d: (order.get(d["status"], 3), d["name"].lower()))
     out = fold_tools(out, order)
-    return {"downloads": out, "time": time.time(), "controllable": steam_reachable()}
+    controllable = steam_reachable()
+    result = {"downloads": out, "time": time.time(), "controllable": controllable}
+    if not controllable:
+        # Why not, for the popup's notice: Steam closed, the flag file
+        # missing, or Steam started before the flag was made.
+        result.update({"steamRunning": steam_running(), "debugFlag": os.path.exists(DEBUG_FLAG), "debugFlagPath": DEBUG_FLAG})
+    return result
 
 
 # ---------- store lists ----------
@@ -968,7 +1007,9 @@ if __name__ == "__main__":
     mode = sys.argv[1] if len(sys.argv) > 1 else "games"
     try:
         result = (store_page(int(sys.argv[2])) if mode == "store"
-                  else friends() if mode == "friends" else downloads() if mode == "downloads"
+                  else friends() if mode == "friends" else cache.load_friends() if mode == "friends-cached"
+                  else cache.save_collapsed(seq(json.loads(sys.argv[2]), 500)) or {} if mode == "set-collapsed"
+                  else downloads() if mode == "downloads"
                   else store_lists() if mode == "storelists" else games())
     except Exception as e:  # report instead of crashing the widget
         result = {"error": str(e)[:500]}

@@ -12,9 +12,9 @@ A bar widget for [Omarchy](https://omarchy.org)'s shell that puts Steam in a pop
   popup: trailers and screenshots, description, reviews, tags, Steam Deck status, system
   requirements and the most helpful reviews. Buying opens Steam.
 - **Recent**: your recently played, installed games. Click to play.
-- **Library**: everything you own, searchable (`/`). Tick **Most played** to sort by hours or
-  **Uninstalled** to show only games you haven't installed. Uninstalled games install to the
-  drive of your choice.
+- **Library**: everything you own, searchable (`/`). It opens on **Installed** games; untick it
+  to see everything, tick **Uninstalled** for the games you haven't installed, or **Most played**
+  to sort by hours. Uninstalled games install to the drive of your choice.
 - **Downloads**: live progress, speed and time left, with pause/resume. Collapse the section
   with its header or `d`.
 - **Friends**: who's online and what they're playing, with chat in the popup.
@@ -79,6 +79,7 @@ From a script or keybinding:
 omarchy-shell blip.steam toggle
 omarchy-shell blip.steam tab store        # store | recent | library | friends
 omarchy-shell blip.steam store 1091500    # open a game's store page by app id
+omarchy-shell blip.steam popout 12345678  # chat with a friend (by account id) in its own window
 ```
 
 ## What it talks to

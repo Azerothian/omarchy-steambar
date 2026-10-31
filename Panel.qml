@@ -31,16 +31,26 @@ Panel {
   property bool cursorActive: false
   property var games: []
   property var friends: []
+  // Steam's friend groups ({id, name}), favorites first; each friend lists
+  // the group ids it's in. Only known with Steam controllable.
+  property var friendGroups: []
+  // Section keys (group id, "online", "offline") minimised to their header;
+  // kept in the cache so they stay that way.
+  property var collapsedGroups: ({})
   property bool gamesLoaded: false
   property bool friendsLoaded: false
+  // Showing the last list saved to the cache until the live one arrives.
+  property bool friendsCached: false
   property var storeLists: ({})
   property bool storeListsLoaded: false
   property string errorText: ""
   property string friendsError: ""
   property string filterText: ""
   // Library ticks under the search field: most played first (played
-  // games only) and uninstalled only.
+  // games only), installed only (the default) and uninstalled only. The last
+  // two exclude each other.
   property bool mostPlayed: false
+  property bool installedOnly: true
   property bool uninstalledOnly: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -75,6 +85,7 @@ Panel {
   readonly property color onlineColor: "#57cbde"
   // The theme's urgent colour is grey here too, so uninstall gets a real red.
   readonly property color dangerColor: "#e0524d"
+  readonly property color warnColor: "#e0a84d"
 
   readonly property var recentGames: {
     var out = []
@@ -89,6 +100,7 @@ Panel {
     for (var j = 0; j < games.length; j++) {
       var g = games[j]
       if (q !== "" && g.name.toLowerCase().indexOf(q) < 0) continue
+      if (installedOnly && !g.installed) continue
       if (uninstalledOnly && g.installed) continue
       if (mostPlayed && !(g.playtime > 0)) continue
       out.push(g)
@@ -123,8 +135,52 @@ Panel {
     return n
   }
 
+  // Without Steam's debugging port much of the widget falls back to slower
+  // or Steam-window paths; the header's alert explains why and how to fix it.
+  property bool controlChecked: false
+  property bool steamRunning: true
+  property bool debugFlag: false
+  property string debugFlagPath: ""
+  property bool degradedOpen: false
+  readonly property bool degraded: controlChecked && !controllable
+  readonly property string enableCommand: "touch " + debugFlagPath
+
+  // Friends laid out like Steam's list: each group (a friend can be in
+  // several), then everyone else online, then offline. The first row of a
+  // section carries its header.
+  readonly property var friendRows: {
+    var sections = friendGroups.map(function(g) { return { name: g.name, id: g.id, members: [] } })
+    var byId = {}
+    for (var i = 0; i < sections.length; i++) byId[sections[i].id] = sections[i]
+    var online = { name: "Online", id: "online", members: [] }, offline = { name: "Offline", id: "offline", members: [] }
+    var q = filterText.trim().toLowerCase()
+    for (var j = 0; j < friends.length; j++) {
+      var f = friends[j], placed = false
+      if (q !== "" && [f.name, f.personaName, f.game].join("\n").toLowerCase().indexOf(q) < 0) continue
+      var ids = f.groups || []
+      for (var k = 0; k < ids.length; k++)
+        if (byId[ids[k]]) { byId[ids[k]].members.push(f); placed = true }
+      if (!placed) (f.state === "offline" || f.state === "unknown" ? offline : online).members.push(f)
+    }
+    var out = []
+    sections.concat([online, offline]).forEach(function(sec) {
+      if (!sec.members.length) return
+      var n = 0
+      for (var m = 0; m < sec.members.length; m++)
+        if (sec.members[m].state !== "offline" && sec.members[m].state !== "unknown") n++
+      // While searching, every match shows, minimised group or not.
+      var collapsed = !!collapsedGroups[sec.id] && q === ""
+      out.push({
+        isHeader: true, sectionId: sec.id, name: sec.name, collapsed: collapsed, first: out.length === 0,
+        count: sec === online ? String(n) : sec === offline ? String(sec.members.length) : n + "/" + sec.members.length,
+      })
+      if (!collapsed) out = out.concat(sec.members)
+    })
+    return out
+  }
+
   readonly property var rows: tab === "recent" ? recentGames : tab === "library" ? libraryGames
-    : tab === "store" ? storeRows : friends
+    : tab === "store" ? storeRows : friendRows
 
   // Active/queued/paused downloads from `steam.py downloads`, each with a
   // smoothed `speed` (bytes/s) worked out here from successive samples.
@@ -247,11 +303,12 @@ Panel {
     }
   }
 
-  onTabChanged: { rowIndex = 0; armedUninstall = 0; list.positionViewAtBeginning(); if (tab === "store") refreshStoreLists() }
+  onTabChanged: { rowIndex = 0; filterText = ""; filterField.text = ""; armedUninstall = 0; list.positionViewAtBeginning(); if (tab === "store") refreshStoreLists() }
   onStoreKindChanged: { rowIndex = 0; list.positionViewAtBeginning() }
   onFilterTextChanged: rowIndex = 0
   onMostPlayedChanged: { rowIndex = 0; list.positionViewAtBeginning() }
   onUninstalledOnlyChanged: { rowIndex = 0; list.positionViewAtBeginning() }
+  onInstalledOnlyChanged: { rowIndex = 0; list.positionViewAtBeginning() }
 
   // ---------- data ----------
   function refreshGames() { if (!gamesProc.running) gamesProc.running = true }
@@ -268,7 +325,10 @@ Panel {
       runCtl(["friends"], function(ok, value) {
         root.friendsCtlBusy = false
         if (!ok) return
-        root.friends = root.sortFriends(value || [])
+        var v = value || []
+        root.friendGroups = Array.isArray(v) ? [] : v.groups || []
+        root.friends = root.sortFriends(Array.isArray(v) ? v : v.friends || [])
+        root.friendsCached = false
         root.friendsLoaded = true
         root.friendsError = ""
         root.syncChatFriend()
@@ -278,6 +338,13 @@ Panel {
     if (friendsProc.running) return
     friendsProc.environment = { "STEAM_API_KEY": root.apiKey }
     friendsProc.running = true
+  }
+
+  function toggleGroup(id) {
+    var next = Object.assign({}, collapsedGroups)
+    if (next[id]) delete next[id]; else next[id] = true
+    collapsedGroups = next
+    Quickshell.execDetached(["python3", root.script, "set-collapsed", JSON.stringify(Object.keys(next))])
   }
 
   function sortFriends(list) {
@@ -295,14 +362,14 @@ Panel {
 
   // ---------- chat ----------
   // Clicking a friend widens the popup to the right with a chat pane that
-  // reads and sends through the Steam client (steamctl.py chat/send).
+  // reads and sends through the Steam client (steamctl.py chat/send). A
+  // chat can also pop out into its own window, which outlives the popup.
   property var chatFriend: null
-  property var chatMessages: []
-  property string chatSignature: ""
-  property bool chatTyping: false
-  property bool chatLoaded: false
-  property string chatError: ""
   readonly property bool chatOpen: !!chatFriend
+  // Account ids with a chat window open, and the friend each was opened
+  // for (used while the live list doesn't have them).
+  property var popouts: []
+  property var popoutFriends: ({})
   readonly property real railWidth: Style.space(64)
   readonly property real listWidth: railWidth + Style.space(340)
   readonly property var tabInfo: ({
@@ -322,23 +389,128 @@ Panel {
     if (!friend) return
     closeStore()
     if (!controllable) { launch("steam://friends/message/" + friend.steamid); return }
-    if (!chatFriend || chatFriend.accountid !== friend.accountid) {
-      chatFriend = friend
-      chatMessages = []
-      chatSignature = ""
-      chatLoaded = false
-      chatTyping = false
-      chatError = ""
-      refreshChat()
-    }
-    Qt.callLater(function() { chatInput.forceActiveFocus() })
+    if (!chatFriend || chatFriend.accountid !== friend.accountid) chatFriend = friend
+    Qt.callLater(function() { chatView.focusInput() })
   }
 
   function closeChat() {
     chatFriend = null
-    chatMessages = []
-    chatSignature = ""
     keyCatcher.forceActiveFocus()
+  }
+
+  function friendById(accountid) {
+    for (var i = 0; i < friends.length; i++) if (friends[i].accountid === accountid) return friends[i]
+    return popoutFriends[accountid] || null
+  }
+
+  function gameById(appid) {
+    for (var i = 0; i < games.length; i++) if (games[i].appid === appid) return games[i]
+    return null
+  }
+
+  // Opens the chat in its own window, or brings its window forward
+  // (switching workspace if it's on another) when it's already open.
+  function popOutChat(friend) {
+    if (!friend) return
+    var id = String(friend.accountid)
+    var known = Object.assign({}, popoutFriends)
+    known[id] = friend
+    popoutFriends = known
+    if (chatFriend) closeChat()
+    if (popouts.indexOf(id) < 0) popouts = popouts.concat([id])
+    else focusPopout(id)
+  }
+
+  // Copies through wl-copy's stdin, so chat text never shows in a process list.
+  function copyText(text) {
+    if (clipboardProc.running) return
+    clipboardProc.pending = String(text || "")
+    clipboardProc.stdinEnabled = true
+    clipboardProc.running = true
+  }
+
+  Process {
+    id: clipboardProc
+    property string pending: ""
+    command: ["wl-copy"]
+    onStarted: { write(pending); stdinEnabled = false }
+  }
+
+  // Chat videos can play in a window each, picking up where the inline
+  // player was; YouTube links play in mpv (through yt-dlp) when it's there.
+  property var videoViewers: []
+  property var videoStarts: ({})
+
+  function openVideo(src, startMs) {
+    if (!src) return
+    var starts = Object.assign({}, videoStarts)
+    starts[src] = startMs || 0
+    videoStarts = starts
+    if (videoViewers.indexOf(src) < 0) videoViewers = videoViewers.concat([src])
+    else focusWindow(videoTitle(src))
+  }
+
+  function closeVideo(src) {
+    videoViewers = videoViewers.filter(function(s) { return s !== src })
+  }
+
+  function videoTitle(src) {
+    var parts = String(src).split("/").filter(function(p) { return p !== "" })
+    return "Steam video · " + (parts.length ? parts[parts.length - 1].slice(0, 12) : "")
+  }
+
+  function playYoutube(card) {
+    if (!card || !/^[\w-]{11}$/.test(card.id)) return
+    Quickshell.execDetached(["sh", "-c",
+      "if command -v mpv >/dev/null; then exec mpv --force-window=immediate --title=\"$2\" -- \"$1\"; else exec xdg-open \"$1\"; fi",
+      "youtube", "https://www.youtube.com/watch?v=" + card.id, "YouTube · " + (card.title || card.id)])
+  }
+
+  function mediaTime(ms) {
+    var t = Math.max(0, Math.floor((ms || 0) / 1000))
+    var h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), sec = t % 60
+    return (h ? h + ":" + (m < 10 ? "0" : "") : "") + m + ":" + (sec < 10 ? "0" : "") + sec
+  }
+
+  // Chat images open full size in a window each, with zoom.
+  property var imageViewers: []
+
+  function openImage(src) {
+    if (!src) return
+    if (imageViewers.indexOf(src) < 0) imageViewers = imageViewers.concat([src])
+    else focusWindow(imageTitle(src))
+  }
+
+  function closeImage(src) {
+    imageViewers = imageViewers.filter(function(s) { return s !== src })
+  }
+
+  function imageTitle(src) {
+    var parts = String(src).split("/").filter(function(p) { return p !== "" })
+    return "Steam image · " + (parts.length ? parts[parts.length - 1].slice(0, 12) : "")
+  }
+
+  function popoutTitle(accountid) {
+    var f = friendById(accountid)
+    return "Steam chat · " + (f ? f.name : accountid)
+  }
+
+  function focusPopout(accountid) { focusWindow(popoutTitle(accountid)) }
+
+  // Bring one of this widget's windows forward by title, switching
+  // workspace when it's on another.
+  function focusWindow(title) {
+    Quickshell.execDetached(["sh", "-c",
+      "addr=$(hyprctl clients -j | jq -r --arg t \"$1\" " +
+      "'map(select(.class == \"org.quickshell\" and .title == $t)) | .[0].address // empty'); " +
+      "[ -n \"$addr\" ] || exit 0; " +
+      "hyprctl dispatch \"hl.dsp.focus({ window = \\\"address:$addr\\\" })\" >/dev/null 2>&1 || " +
+      "hyprctl dispatch focuswindow \"address:$addr\"",
+      "focus-window", title])
+  }
+
+  function closePopout(accountid) {
+    popouts = popouts.filter(function(id) { return id !== accountid })
   }
 
   // ---------- store page ----------
@@ -362,7 +534,7 @@ Panel {
 
   function openStore(game) {
     if (!game) return
-    if (chatFriend) { chatFriend = null; chatMessages = []; chatSignature = "" }
+    chatFriend = null
     if (storeGame && storeGame.appid === game.appid) return
     storeGame = game
     storeError = ""
@@ -409,31 +581,15 @@ Panel {
       if (friends[i].accountid === chatFriend.accountid) { chatFriend = friends[i]; return }
   }
 
-  function refreshChat() {
-    if (!chatFriend || chatProc.running) return
-    chatProc.account = chatFriend.accountid
-    chatProc.command = ["python3", root.ctlScript, "chat", chatFriend.accountid, "read"]
-    chatProc.running = true
-  }
+  // Each message carries its time; a day label divides the days.
+  function chatTime(ts) { return Qt.formatTime(new Date(ts * 1000), "HH:mm") }
 
-  function sendChat(text) {
-    text = String(text || "").trim()
-    if (!text || !chatFriend) return
-    chatError = ""
-    // Shown straight away (dimmed) until Steam's copy comes back.
-    chatMessages = chatMessages.concat([{ mine: true, text: text, ts: Date.now() / 1000,
-      key: "local:" + Date.now(), pending: true, failed: false, showTime: false }])
-    runCtl(["send", chatFriend.accountid], text, function(ok, value, error) {
-      if (!ok) root.chatError = "Couldn't send: " + error
-      root.refreshChat()
-    })
-  }
-
-  function chatTime(ts) {
-    var d = new Date(ts * 1000)
-    var now = new Date()
-    if (d.toDateString() === now.toDateString()) return Qt.formatTime(d, "HH:mm")
-    return Qt.formatDateTime(d, d.getFullYear() === now.getFullYear() ? "d MMM, HH:mm" : "d MMM yyyy, HH:mm")
+  function chatDay(ts) {
+    var d = new Date(ts * 1000), now = new Date()
+    var yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+    if (d.toDateString() === now.toDateString()) return "Today"
+    if (d.toDateString() === yesterday.toDateString()) return "Yesterday"
+    return Qt.formatDate(d, d.getFullYear() === now.getFullYear() ? "ddd d MMM" : "d MMM yyyy")
   }
 
   // Native `steam` when installed, otherwise the Flatpak.
@@ -447,7 +603,8 @@ Panel {
 
   function activateRow(item) {
     if (!item) return
-    if (root.tab === "friends") openChat(item)
+    if (root.tab === "friends" && item.isHeader) toggleGroup(item.sectionId)
+    else if (root.tab === "friends") openChat(item)
     else if (root.tab === "store" && !item.owned) openStore(item)
     else if (item.installed) launch("steam://rungameid/" + item.appid)
     else if (downloadsById[item.appid]) toggleDownload(downloadsById[item.appid])
@@ -661,7 +818,8 @@ Panel {
   }
 
   function friendLine(f) {
-    if (f.state === "in-game") return f.game ? "Playing " + f.game : "In-Game"
+    if (f.state === "in-game")
+      return f.game ? (f.presence ? f.game + " · " + f.presence : "Playing " + f.game) : f.presence || "In-Game"
     if (f.state === "unknown") return "Status unavailable"
     return f.statusText || (f.state.charAt(0).toUpperCase() + f.state.slice(1))
   }
@@ -679,7 +837,7 @@ Panel {
 
   function moveRow(delta) {
     if (!cursorActive) { cursorActive = true; return }
-    if (tab === "library" && delta < 0 && rowIndex === 0) { focusFilter(); return }
+    if ((tab === "library" || tab === "friends") && delta < 0 && rowIndex === 0) { focusFilter(); return }
     var n = rows.length
     if (!n) return
     rowIndex = Math.max(0, Math.min(n - 1, rowIndex + delta))
@@ -688,7 +846,7 @@ Panel {
   }
 
   function focusFilter() {
-    if (tab !== "library") tab = "library"
+    if (tab !== "library" && tab !== "friends") tab = "library"
     filterField.forceActiveFocus()
     cursorActive = false
   }
@@ -725,6 +883,13 @@ Panel {
       for (var i = 0; i < t.friends.length; i++)
         if (String(t.friends[i].accountid) === account) { t.tab = "friends"; t.open(); t.openChat(t.friends[i]); return }
     }
+    function video(url: string): void { if (/^https:\/\//.test(url)) root.mainInstance().openVideo(url, 0) }
+    function image(url: string): void { if (/^https:\/\//.test(url)) root.mainInstance().openImage(url) }
+    function popout(account: string): void {
+      var t = root.mainInstance()
+      var f = t.friendById(account)
+      if (f) t.popOutChat(f)
+    }
     function store(appid: string): void {
       var t = root.mainInstance()
       t.tab = "store"
@@ -753,7 +918,7 @@ Panel {
     }
   }
 
-  Component.onCompleted: { mainMonitorProc.running = true; refreshGames(); refreshDownloads(); refreshFolders() }
+  Component.onCompleted: { mainMonitorProc.running = true; friendsCacheProc.running = true; refreshGames(); refreshDownloads(); refreshFolders() }
 
   // Downloads: quick checks while one is running or the popup is open (the
   // bar icon shows progress too), a slow check otherwise to notice new ones.
@@ -846,6 +1011,15 @@ Panel {
             root.controllable = d.controllable
             if (d.controllable) root.refreshFolders()
           }
+          if (d.controllable !== undefined) {
+            root.controlChecked = true
+            if (d.controllable) root.degradedOpen = false
+            else {
+              root.steamRunning = d.steamRunning !== false
+              root.debugFlag = !!d.debugFlag
+              root.debugFlagPath = d.debugFlagPath || ""
+            }
+          }
           if (d.downloads) root.updateDownloads(root.mergePending(d.downloads), d.time || Date.now() / 1000)
           // A finished download changes what's installed.
           if (wasDownloading && root.downloads.length === 0) root.refreshGames()
@@ -872,7 +1046,7 @@ Panel {
   }
 
   onOpenedChanged: {
-    if (!opened) { armedUninstall = 0; chatFriend = null; chatMessages = []; chatSignature = ""; closeStore() }
+    if (!opened) { armedUninstall = 0; chatFriend = null; closeStore() }
     if (!opened && Date.now() < reopenUntil) { reopenTimer.restart(); return }
     if (opened && reopening) { reopening = false; return }
     if (opened) {
@@ -899,34 +1073,368 @@ Panel {
     onTriggered: root.refreshFriends()
   }
 
-  Timer {
-    interval: 1500
-    running: root.opened && root.chatOpen
-    repeat: true
-    onTriggered: root.refreshChat()
+  // Popped-out chats: a window each, open until you close it.
+  Variants {
+    model: root.popouts
+
+    FloatingWindow {
+      id: chatWindow
+      required property string modelData
+      readonly property var friend: root.friendById(modelData)
+      title: root.popoutTitle(modelData)
+      implicitWidth: 420
+      implicitHeight: 580
+      minimumSize: Qt.size(300, 320)
+      color: Color.background
+      visible: true
+      onClosed: root.closePopout(modelData)
+
+      // Hyprland doesn't always hand focus to a new window; ask once it's mapped.
+      Timer {
+        interval: 250
+        running: true
+        onTriggered: root.focusPopout(chatWindow.modelData)
+      }
+
+      ChatView {
+        anchors.fill: parent
+        anchors.margins: Style.space(14)
+        friend: chatWindow.friend
+        active: true
+        popout: true
+        onCloseRequested: root.closePopout(chatWindow.modelData)
+        Component.onCompleted: focusInput()
+      }
+    }
   }
 
-  Process {
-    id: chatProc
-    property string account: ""
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        if (!root.chatFriend || root.chatFriend.accountid !== chatProc.account) return
-        var r = {}
-        try { r = JSON.parse(String(text || "{}")) } catch (e) { r = { ok: false, error: "no reply" } }
-        if (!r.ok) { root.chatError = r.error || "Couldn't load the chat"; return }
-        var v = r.value || {}
-        root.chatTyping = !!v.typing
-        root.chatLoaded = true
-        var list = v.messages || []
-        var sig = JSON.stringify(list)
-        if (sig === root.chatSignature) return
-        root.chatSignature = sig
-        // A time label above the first message and after 5+ quiet minutes.
-        for (var i = 0; i < list.length; i++)
-          list[i].showTime = i === 0 || list[i].ts - list[i - 1].ts > 300
-        root.chatMessages = list
+  Variants {
+    model: root.videoViewers
+
+    FloatingWindow {
+      id: videoWindow
+      required property string modelData
+      title: root.videoTitle(modelData)
+      implicitWidth: 960
+      implicitHeight: 600
+      minimumSize: Qt.size(360, 260)
+      color: "black"
+      visible: true
+      onClosed: root.closeVideo(modelData)
+
+      Timer {
+        interval: 250
+        running: true
+        onTriggered: { root.focusWindow(videoWindow.title); videoKeys.forceActiveFocus() }
+      }
+
+      Item {
+        id: videoKeys
+        anchors.fill: parent
+        focus: true
+
+        Keys.onPressed: function(event) {
+          if (event.key === Qt.Key_Escape) root.closeVideo(videoWindow.modelData)
+          else if (event.key === Qt.Key_Space || event.key === Qt.Key_K) windowPlayer.toggle()
+          else if (event.key === Qt.Key_Left) windowPlayer.seek(Math.max(0, windowPlayer.position - 5000))
+          else if (event.key === Qt.Key_Right) windowPlayer.seek(Math.min(windowPlayer.duration, windowPlayer.position + 5000))
+          else if (event.key === Qt.Key_M) windowPlayer.muted = !windowPlayer.muted
+          else return
+          event.accepted = true
+        }
+
+        Video {
+          id: windowPlayer
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.bottom: videoBar.top
+          source: videoWindow.modelData
+          volume: 0.8
+          fillMode: VideoOutput.PreserveAspectFit
+          property bool started: false
+          function toggle() { if (playbackState === MediaPlayer.PlayingState) pause(); else play() }
+          // Start where the chat's player was.
+          onDurationChanged: if (!started && duration > 0) {
+            started = true
+            var at = root.videoStarts[videoWindow.modelData] || 0
+            if (at > 0 && at < duration - 1000) seek(at)
+          }
+          Component.onCompleted: play()
+
+          TapHandler { onTapped: { videoKeys.forceActiveFocus(); windowPlayer.toggle() } }
+        }
+
+        Text {
+          anchors.centerIn: windowPlayer
+          visible: windowPlayer.error !== MediaPlayer.NoError || windowPlayer.mediaStatus === MediaPlayer.LoadingMedia
+          text: windowPlayer.error !== MediaPlayer.NoError ? "Couldn't play the video" : "Loading…"
+          color: "white"
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+        }
+
+        Rectangle {
+          id: videoBar
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          height: barRow.implicitHeight + Style.space(16)
+          color: Color.background
+
+          RowLayout {
+            id: barRow
+            anchors.fill: parent
+            anchors.margins: Style.space(8)
+            spacing: Style.space(8)
+
+            PanelActionButton {
+              iconText: windowPlayer.playbackState === MediaPlayer.PlayingState ? "󰏤" : "󰐊"
+              tooltipText: windowPlayer.playbackState === MediaPlayer.PlayingState ? "Pause (Space)" : "Play (Space)"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.body
+              onClicked: windowPlayer.toggle()
+            }
+
+            Text {
+              text: root.mediaTime(windowPlayer.position) + " / " + root.mediaTime(windowPlayer.duration)
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+            }
+
+            PanelSlider {
+              Layout.fillWidth: true
+              minimum: 0
+              maximum: Math.max(1, windowPlayer.duration)
+              step: 100
+              value: windowPlayer.position
+              onMoved: function(v) { windowPlayer.seek(v) }
+            }
+
+            PanelActionButton {
+              iconText: windowPlayer.muted || windowPlayer.volume === 0 ? "󰝟" : "󰕾"
+              tooltipText: windowPlayer.muted ? "Unmute (M)" : "Mute (M)"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.body
+              onClicked: windowPlayer.muted = !windowPlayer.muted
+            }
+
+            PanelSlider {
+              Layout.preferredWidth: Style.space(90)
+              minimum: 0
+              maximum: 1
+              step: 0.05
+              value: windowPlayer.volume
+              onMoved: function(v) { windowPlayer.volume = v; windowPlayer.muted = false }
+            }
+
+            PanelActionButton {
+              iconText: "󰏌"
+              tooltipText: "Open in browser"
+              foreground: root.dim
+              fontFamily: root.fontFamily
+              fontSize: Style.font.body
+              onClicked: Qt.openUrlExternally(videoWindow.modelData)
+            }
+          }
+        }
+      }
+    }
+  }
+
+  Variants {
+    model: root.imageViewers
+
+    FloatingWindow {
+      id: viewer
+      required property string modelData
+      property real zoom: 1
+      readonly property real fitZoom: full.implicitWidth > 0
+        ? Math.min(flick.width / full.implicitWidth, flick.height / full.implicitHeight) : 1
+      title: root.imageTitle(modelData)
+      implicitWidth: 1000
+      implicitHeight: 720
+      minimumSize: Qt.size(360, 280)
+      color: Color.background
+      visible: true
+      onClosed: root.closeImage(modelData)
+
+      function setZoom(z) { zoom = Math.max(0.05, Math.min(4, z)) }
+
+      // Zoom keeping the image point under (px, py) in the view where it is.
+      function zoomAt(z, px, py) {
+        var ux = (flick.contentX + px - full.x) / zoom
+        var uy = (flick.contentY + py - full.y) / zoom
+        setZoom(z)
+        flick.contentX = Math.max(0, Math.min(ux * zoom + full.x - px, flick.contentWidth - flick.width))
+        flick.contentY = Math.max(0, Math.min(uy * zoom + full.y - py, flick.contentHeight - flick.height))
+      }
+
+      function zoomCentre(z) { zoomAt(z, flick.width / 2, flick.height / 2) }
+
+      Timer {
+        interval: 250
+        running: true
+        onTriggered: { root.focusWindow(viewer.title); keys.forceActiveFocus() }
+      }
+
+      Item {
+        id: keys
+        anchors.fill: parent
+        focus: true
+
+        // Clicking anywhere gives the keys back (+ - 0 1 Esc).
+        TapHandler { onTapped: keys.forceActiveFocus() }
+
+        Keys.onPressed: function(event) {
+          if (event.key === Qt.Key_Escape) root.closeImage(viewer.modelData)
+          else if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) viewer.zoomCentre(viewer.zoom * 1.25)
+          else if (event.key === Qt.Key_Minus) viewer.zoomCentre(viewer.zoom / 1.25)
+          else if (event.key === Qt.Key_0) viewer.setZoom(viewer.fitZoom)
+          else if (event.key === Qt.Key_1) viewer.zoomCentre(1)
+          else return
+          event.accepted = true
+        }
+
+        // Drag to pan and the wheel scrolls; shift + wheel zooms at the
+        // mouse, and a click zooms in there (or back out to fit).
+        Flickable {
+          id: flick
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.top: parent.top
+          anchors.bottom: bar.top
+          clip: true
+          contentWidth: Math.max(width, full.width)
+          contentHeight: Math.max(height, full.height)
+          boundsBehavior: Flickable.StopAtBounds
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+          ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          Image {
+            id: full
+            x: Math.max(0, (flick.width - width) / 2)
+            y: Math.max(0, (flick.height - height) / 2)
+            width: implicitWidth * viewer.zoom
+            height: implicitHeight * viewer.zoom
+            source: viewer.modelData
+            asynchronous: true
+            smooth: true
+            mipmap: true
+            fillMode: Image.Stretch
+            // Start fitted to the window, never blown up past full size.
+            onStatusChanged: if (status === Image.Ready) viewer.setZoom(Math.min(1, viewer.fitZoom))
+          }
+
+        }
+
+        Item {
+          anchors.fill: flick
+
+          WheelHandler {
+            acceptedModifiers: Qt.ShiftModifier
+            onWheel: function(event) {
+              // Some setups turn shift + wheel into a sideways scroll.
+              var delta = event.angleDelta.y !== 0 ? event.angleDelta.y : event.angleDelta.x
+              if (delta !== 0) viewer.zoomAt(viewer.zoom * (delta > 0 ? 1.15 : 1 / 1.15), event.x, event.y)
+            }
+          }
+
+          TapHandler {
+            enabled: full.status === Image.Ready
+            onTapped: function(eventPoint) {
+              // In to actual size (2x when it already fits at that), out to fit.
+              var p = eventPoint.position
+              var closeUp = viewer.fitZoom >= 1 ? 2 : 1
+              if (viewer.zoom < closeUp - 0.001) viewer.zoomAt(closeUp, p.x, p.y)
+              else viewer.zoomAt(Math.min(1, viewer.fitZoom), p.x, p.y)
+            }
+          }
+        }
+
+        Text {
+          anchors.centerIn: flick
+          visible: full.status !== Image.Ready
+          text: full.status === Image.Error ? "Couldn't load the image" : "Loading…"
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+        }
+
+        RowLayout {
+          id: bar
+          anchors.left: parent.left
+          anchors.right: parent.right
+          anchors.bottom: parent.bottom
+          anchors.margins: Style.space(10)
+          spacing: Style.space(8)
+
+          PanelActionButton {
+            iconText: "󰍴"
+            tooltipText: "Zoom out (-)"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: viewer.zoomCentre(viewer.zoom / 1.25)
+          }
+
+          PanelSlider {
+            Layout.fillWidth: true
+            minimum: 0.05
+            maximum: 4
+            step: 0.01
+            value: viewer.zoom
+            onMoved: function(v) { viewer.zoomCentre(v) }
+          }
+
+          PanelActionButton {
+            iconText: "󰐕"
+            tooltipText: "Zoom in (+)"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: viewer.zoomCentre(viewer.zoom * 1.25)
+          }
+
+          Text {
+            Layout.preferredWidth: Style.space(48)
+            horizontalAlignment: Text.AlignRight
+            text: Math.round(viewer.zoom * 100) + "%"
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          PanelActionButton {
+            iconText: "Fit"
+            tooltipText: "Fit to window (0)"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: viewer.setZoom(viewer.fitZoom)
+          }
+
+          PanelActionButton {
+            iconText: "1:1"
+            tooltipText: "Actual size (1)"
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: viewer.zoomCentre(1)
+          }
+
+          PanelActionButton {
+            iconText: "󰏌"
+            tooltipText: "Open in browser"
+            foreground: root.dim
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: Qt.openUrlExternally(viewer.modelData)
+          }
+        }
       }
     }
   }
@@ -985,6 +1493,28 @@ Panel {
     }
   }
 
+  // The friend list saved by the last refresh, shown until a live one lands.
+  Process {
+    id: friendsCacheProc
+    command: ["python3", root.script, "friends-cached"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          var d = JSON.parse(String(text || "{}"))
+          var c = {}
+          for (var i = 0; i < (d.collapsed || []).length; i++) c[d.collapsed[i]] = true
+          root.collapsedGroups = c
+          if (root.friendsLoaded || !d.friends || !d.friends.length) return
+          root.friendGroups = d.groups || []
+          root.friends = root.sortFriends(d.friends)
+          root.friendsCached = true
+          root.friendsLoaded = true
+        } catch (e) {}
+      }
+    }
+  }
+
   Process {
     id: friendsProc
     command: ["python3", root.script, "friends"]
@@ -994,7 +1524,7 @@ Panel {
         try {
           var d = JSON.parse(String(text || "{}"))
           root.friendsError = d.error || ""
-          if (d.friends) root.friends = d.friends
+          if (d.friends) { root.friends = d.friends; root.friendGroups = d.groups || []; root.friendsCached = false }
         } catch (e) {
           root.friendsError = "Couldn't load friends"
         }
@@ -1071,7 +1601,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: filterField.activeFocus || chatInput.activeFocus
+      blocked: filterField.activeFocus || chatView.inputFocused
       onMoveRequested: function(dx, dy) {
         if (dx !== 0 && root.storeOpen) root.stepMedia(dx)
         else if (dx !== 0) root.switchTab(dx)
@@ -1213,7 +1743,7 @@ Panel {
 
           Column {
             anchors.left: parent.left
-            anchors.right: parent.right
+            anchors.right: degradedButton.visible ? degradedButton.left : parent.right
             anchors.verticalCenter: parent.verticalCenter
             spacing: Style.space(2)
 
@@ -1230,12 +1760,133 @@ Panel {
               width: parent.width
               textFormat: Text.PlainText
               text: (root.games.length + " GAMES") + (root.friendsLoaded ? " · " + root.friendsOnline + " FRIENDS ONLINE" : "")
+                + (root.friendsCached && root.tab === "friends" ? " · UPDATING" : "")
               color: Qt.darker(root.foreground, 1.4)
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               font.bold: true
               font.letterSpacing: 1.2
               elide: Text.ElideRight
+            }
+          }
+
+          PanelActionButton {
+            id: degradedButton
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            visible: root.degraded
+            iconText: "󰀦"
+            tooltipText: "Some features are limited"
+            foreground: root.warnColor
+            fontFamily: root.fontFamily
+            fontSize: Style.font.body
+            onClicked: root.degradedOpen = !root.degradedOpen
+          }
+        }
+
+        // What's limited without the debugging port, and how to turn it on.
+        Rectangle {
+          Layout.fillWidth: true
+          visible: root.degraded && root.degradedOpen
+          implicitHeight: noticeCol.implicitHeight + Style.space(20)
+          radius: Style.space(6)
+          color: Qt.rgba(root.warnColor.r, root.warnColor.g, root.warnColor.b, 0.1)
+          border.width: 1
+          border.color: Qt.rgba(root.warnColor.r, root.warnColor.g, root.warnColor.b, 0.45)
+
+          ColumnLayout {
+            id: noticeCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Style.space(10)
+            spacing: Style.space(6)
+
+            RowLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(6)
+
+              Text {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: !root.steamRunning ? "Steam isn't running"
+                  : root.debugFlag ? "Restart Steam to finish turning on control" : "Limited without Steam's debugging port"
+                color: root.warnColor
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                wrapMode: Text.Wrap
+              }
+
+              PanelActionButton {
+                iconText: "󰅖"
+                tooltipText: "Hide"
+                foreground: root.dim
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.degradedOpen = false
+              }
+            }
+
+            Text {
+              Layout.fillWidth: true
+              textFormat: Text.PlainText
+              text: !root.steamRunning
+                ? "Start Steam for live friends and chat, and to install or pause games from here."
+                : root.debugFlag
+                ? "The flag file is in place, but Steam only opens its debugging port when it starts."
+                : "Friend status is read from public profiles (slow, often incomplete), with no friend groups or "
+                  + "most nicknames. Chat and installs open in Steam instead, chats can't pop out into their own "
+                  + "windows, and downloads can't be paused here. To turn it on, run this and restart Steam:"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
+            }
+
+            RowLayout {
+              Layout.fillWidth: true
+              visible: root.steamRunning && !root.debugFlag && root.debugFlagPath !== ""
+              spacing: Style.space(6)
+
+              Rectangle {
+                Layout.fillWidth: true
+                implicitHeight: cmdText.implicitHeight + Style.space(10)
+                radius: Style.space(4)
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+
+                Text {
+                  id: cmdText
+                  anchors.fill: parent
+                  anchors.margins: Style.space(5)
+                  textFormat: Text.PlainText
+                  text: root.enableCommand
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WrapAnywhere
+                }
+              }
+
+              PanelActionButton {
+                iconText: "󰆏"
+                tooltipText: "Copy"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.copyText(root.enableCommand)
+              }
+            }
+
+            Text {
+              Layout.fillWidth: true
+              visible: root.steamRunning && !root.debugFlag
+              textFormat: Text.PlainText
+              text: "While it's on, any program on this computer can control Steam through localhost:8080."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
             }
           }
         }
@@ -1258,13 +1909,14 @@ Panel {
 
         ColumnLayout {
           Layout.fillWidth: true
-          visible: root.tab === "library"
+          visible: root.tab === "library" || root.tab === "friends"
           spacing: Style.space(6)
 
           TextField {
             id: filterField
             Layout.fillWidth: true
-            placeholderText: "Search " + root.games.length + " games  (/)"
+            placeholderText: root.tab === "friends" ? "Search " + root.friends.length + " friends  (/)"
+              : "Search " + root.games.length + " games  (/)"
             foreground: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -1292,7 +1944,18 @@ Panel {
 
           RowLayout {
           Layout.fillWidth: true
+          visible: root.tab === "library"
           spacing: Style.space(14)
+
+          FilterTick {
+            label: "Installed"
+            implicitHeight: filterField.height
+            foreground: root.foreground
+            dim: root.dim
+            fontFamily: root.fontFamily
+            checked: root.installedOnly
+            onToggled: { root.installedOnly = !root.installedOnly; if (root.installedOnly) root.uninstalledOnly = false }
+          }
 
           FilterTick {
             label: "Most played"
@@ -1311,7 +1974,7 @@ Panel {
             dim: root.dim
             fontFamily: root.fontFamily
             checked: root.uninstalledOnly
-            onToggled: root.uninstalledOnly = !root.uninstalledOnly
+            onToggled: { root.uninstalledOnly = !root.uninstalledOnly; if (root.uninstalledOnly) root.installedOnly = false }
           }
 
           Item { Layout.fillWidth: true }
@@ -1445,11 +2108,13 @@ Panel {
             visible: root.rows.length === 0
             textFormat: Text.PlainText
             text: root.tab === "friends"
-              ? (root.friendsLoaded ? "No friends found" : "Checking who's online…")
+              ? (!root.friendsLoaded ? "Checking who's online…"
+                : root.filterText !== "" ? "No friends match “" + root.filterText + "”" : "No friends found")
               : root.tab === "store" ? (root.storeListsLoaded ? "Couldn't load the store" : "Loading the Steam store…")
               : !root.gamesLoaded ? "Reading your library…"
               : root.tab === "library" && root.filterText !== "" ? "No games match “" + root.filterText + "”"
-              : root.tab === "library" && (root.mostPlayed || root.uninstalledOnly) ? "No games match these filters"
+              : root.tab === "library" && root.installedOnly && !root.mostPlayed ? "No installed games. Untick Installed to see all " + root.games.length + "."
+              : root.tab === "library" && (root.mostPlayed || root.installedOnly || root.uninstalledOnly) ? "No games match these filters"
               : root.tab === "recent" ? "No recently played games" : "No games"
             color: root.dim
             font.family: root.fontFamily
@@ -1477,142 +2142,14 @@ Panel {
           color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
         }
 
-        ColumnLayout {
+        ChatView {
+          id: chatView
           anchors.fill: parent
-          spacing: Style.space(8)
-
-          RowLayout {
-            Layout.fillWidth: true
-            spacing: Style.space(10)
-
-            ClippingRectangle {
-              Layout.preferredWidth: Style.space(32)
-              Layout.preferredHeight: Style.space(32)
-              radius: Style.space(4)
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-
-              Image {
-                anchors.fill: parent
-                source: root.chatFriend ? root.chatFriend.avatar : ""
-                sourceSize.width: 64
-                fillMode: Image.PreserveAspectCrop
-                asynchronous: true
-              }
-            }
-
-            ColumnLayout {
-              Layout.fillWidth: true
-              spacing: Style.space(1)
-
-              Text {
-                Layout.fillWidth: true
-                textFormat: Text.PlainText
-                text: root.chatFriend ? root.chatFriend.name : ""
-                color: root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                font.bold: true
-                elide: Text.ElideRight
-              }
-
-              Text {
-                Layout.fillWidth: true
-                textFormat: Text.PlainText
-                text: root.chatTyping ? "typing…" : root.chatFriend ? root.friendLine(root.chatFriend) : ""
-                color: root.chatFriend && root.chatFriend.state !== "offline" ? root.stateColor(root.chatFriend.state) : root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
-              }
-            }
-
-            PanelActionButton {
-              iconText: "󰓓"
-              tooltipText: "Open in Steam"
-              foreground: root.dim
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: if (root.chatFriend) root.launch("steam://friends/message/" + root.chatFriend.steamid)
-            }
-
-            PanelActionButton {
-              iconText: "󰅖"
-              tooltipText: "Close chat (Esc)"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.closeChat()
-            }
-          }
-
-          PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
-
-          // Newest message at the bottom, like any chat.
-          ListView {
-            id: chatList
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            clip: true
-            spacing: Style.space(4)
-            verticalLayoutDirection: ListView.BottomToTop
-            boundsBehavior: Flickable.StopAtBounds
-            model: root.chatMessages.slice().reverse()
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-            delegate: ChatBubble {
-              required property var modelData
-              width: chatList.width
-              message: modelData
-            }
-
-            Text {
-              anchors.centerIn: parent
-              width: parent.width - Style.space(20)
-              horizontalAlignment: Text.AlignHCenter
-              wrapMode: Text.WordWrap
-              visible: root.chatMessages.length === 0
-              textFormat: Text.PlainText
-              text: root.chatLoaded ? "No recent messages with " + (root.chatFriend ? root.chatFriend.name : "") + ". Say hi!" : "Loading chat…"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall
-            }
-          }
-
-          Text {
-            Layout.fillWidth: true
-            visible: text !== ""
-            textFormat: Text.PlainText
-            text: root.chatError
-            color: root.dangerColor
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
-          }
-
-          TextField {
-            id: chatInput
-            Layout.fillWidth: true
-            placeholderText: root.chatFriend ? "Message " + root.chatFriend.name : ""
-            foreground: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-
-            Keys.onPressed: function(event) {
-              if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                root.sendChat(text)
-                text = ""
-                event.accepted = true
-              } else if (event.key === Qt.Key_Escape) {
-                if (text !== "") text = ""
-                else root.closeChat()
-                event.accepted = true
-              } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
-                keyCatcher.forceActiveFocus()
-                event.accepted = true
-              }
-            }
-          }
+          friend: root.chatFriend
+          active: root.opened && root.chatOpen
+          onCloseRequested: root.closeChat()
+          onPopOutRequested: root.popOutChat(root.chatFriend)
+          onTabPressed: keyCatcher.forceActiveFocus()
         }
       }
 
@@ -2561,107 +3098,193 @@ Panel {
     }
   }
 
-  // Friends: avatar with a presence dot, name, and what they're doing.
+  // Friends: avatar with a presence dot, name, and what they're doing,
+  // under their group's header when they start one.
   Component {
     id: friendRow
-    RowSurface {
-      id: f
-      readonly property var friend: parent ? parent.entry : null
-      readonly property bool isOffline: !friend || friend.state === "offline" || friend.state === "unknown"
-      rowIdx: parent ? parent.rowIdx : 0
-      current: !!friend && !!root.chatFriend && root.chatFriend.accountid === friend.accountid
-      implicitHeight: Style.space(44)
+    Column {
+      id: fc
+      readonly property var entry: parent ? parent.entry : null
+      readonly property int entryIdx: parent ? parent.rowIdx : 0
+      width: parent ? parent.width : 0
 
-      RowLayout {
-        anchors.fill: parent
-        anchors.leftMargin: Style.space(6)
-        anchors.rightMargin: Style.space(8)
-        spacing: Style.space(10)
+      readonly property bool isHeader: !!entry && !!entry.isHeader
 
-        Item {
-          Layout.preferredWidth: Style.space(32)
-          Layout.preferredHeight: Style.space(32)
+      // A group's header: click (or Enter) to minimise or expand it.
+      Item {
+        width: parent.width
+        visible: fc.isHeader
+        height: visible ? headerRow.height + (fc.entry.first ? 0 : Style.space(6)) : 0
 
-          ClippingRectangle {
+        RowSurface {
+          id: headerRow
+          anchors.bottom: parent.bottom
+          rowIdx: fc.entryIdx
+          implicitHeight: Style.space(24)
+
+          Text {
             anchors.fill: parent
-            radius: Style.space(4)
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-            opacity: f.isOffline ? 0.45 : 1
+            anchors.leftMargin: Style.space(6)
+            anchors.rightMargin: Style.space(8)
+            verticalAlignment: Text.AlignVCenter
+            textFormat: Text.PlainText
+            text: fc.isHeader ? (fc.entry.collapsed ? "󰅂 " : "󰅀 ") + fc.entry.name.toUpperCase() + "  " + fc.entry.count : ""
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            font.letterSpacing: 1.2
+            elide: Text.ElideRight
+          }
+        }
+      }
 
-            Image {
+      RowSurface {
+        id: f
+        visible: !fc.isHeader
+        height: visible ? implicitHeight : 0
+        readonly property var friend: fc.isHeader ? null : fc.entry
+        readonly property bool isOffline: !friend || friend.state === "offline" || friend.state === "unknown"
+        rowIdx: fc.entryIdx
+        current: !!friend && !!root.chatFriend && root.chatFriend.accountid === friend.accountid
+        implicitHeight: Style.space(44)
+
+        RowLayout {
+          anchors.fill: parent
+          anchors.leftMargin: Style.space(6)
+          anchors.rightMargin: Style.space(8)
+          spacing: Style.space(10)
+
+          Item {
+            Layout.preferredWidth: Style.space(32)
+            Layout.preferredHeight: Style.space(32)
+
+            ClippingRectangle {
               anchors.fill: parent
-              source: f.friend ? f.friend.avatar : ""
-              sourceSize.width: 64
-              fillMode: Image.PreserveAspectCrop
-              asynchronous: true
+              radius: Style.space(4)
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+              opacity: f.isOffline ? 0.45 : 1
+
+              Image {
+                anchors.fill: parent
+                source: f.friend ? f.friend.avatar : ""
+                sourceSize.width: 64
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+              }
+            }
+
+            Rectangle {
+              visible: !f.isOffline
+              width: Style.space(10)
+              height: width
+              radius: width / 2
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              anchors.rightMargin: -Style.space(2)
+              anchors.bottomMargin: -Style.space(2)
+              color: f.friend ? root.stateColor(f.friend.state) : root.dim
+              border.width: Style.space(2)
+              border.color: Color.background
+            }
+          }
+
+          ColumnLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(1)
+
+            // Your nickname for them, then their own Steam name. Anchored
+            // rather than laid out: a layout sizing to its own width loops.
+            Item {
+              Layout.fillWidth: true
+              implicitHeight: nameLabel.implicitHeight
+
+              Text {
+                id: nameLabel
+                anchors.left: parent.left
+                width: Math.min(implicitWidth, parent.width * (personaLabel.visible ? 0.65 : 1))
+                textFormat: Text.PlainText
+                text: f.friend ? f.friend.name : ""
+                color: f.isOffline ? root.dim : root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: !f.isOffline
+                elide: Text.ElideRight
+              }
+
+              Text {
+                id: personaLabel
+                anchors.left: nameLabel.right
+                anchors.leftMargin: Style.space(6)
+                anchors.right: parent.right
+                anchors.baseline: nameLabel.baseline
+                visible: !!f.friend && !!f.friend.personaName
+                textFormat: Text.PlainText
+                text: f.friend ? f.friend.personaName || "" : ""
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+            }
+
+            Text {
+              Layout.fillWidth: true
+              textFormat: Text.PlainText
+              text: f.friend ? root.friendLine(f.friend) : ""
+              color: f.friend && !f.isOffline ? root.stateColor(f.friend.state) : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
             }
           }
 
           Rectangle {
-            visible: !f.isOffline
-            width: Style.space(10)
-            height: width
-            radius: width / 2
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.rightMargin: -Style.space(2)
-            anchors.bottomMargin: -Style.space(2)
-            color: f.friend ? root.stateColor(f.friend.state) : root.dim
-            border.width: Style.space(2)
-            border.color: Color.background
-          }
-        }
+            visible: !!f.friend && f.friend.unread > 0
+            Layout.preferredHeight: Style.space(16)
+            Layout.preferredWidth: Math.max(height, unreadLabel.implicitWidth + Style.space(10))
+            radius: height / 2
+            color: root.onlineColor
 
-        ColumnLayout {
-          Layout.fillWidth: true
-          spacing: Style.space(1)
+            Text {
+              id: unreadLabel
+              anchors.centerIn: parent
+              text: f.friend ? String(f.friend.unread) : ""
+              color: "black"
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+          }
+
+          // On hover: open in Steam, or in a chat window of its own.
+          PanelActionButton {
+            visible: f.hasCursor && !!f.friend
+            iconText: "󰓓"
+            tooltipText: "Open in Steam"
+            foreground: root.dim
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: root.launch("steam://friends/message/" + f.friend.steamid)
+          }
+
+          PanelActionButton {
+            visible: f.hasCursor && !!f.friend && root.controllable
+            iconText: "󰏌"
+            tooltipText: "Chat in its own window"
+            foreground: root.dim
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: root.popOutChat(f.friend)
+          }
 
           Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: f.friend ? f.friend.name : ""
-            color: f.isOffline ? root.dim : root.foreground
+            visible: f.hasCursor && !(f.friend && f.friend.unread > 0)
+            text: "󰭹"
+            color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
-            font.bold: !f.isOffline
-            elide: Text.ElideRight
           }
-
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: f.friend ? root.friendLine(f.friend) : ""
-            color: f.friend && !f.isOffline ? root.stateColor(f.friend.state) : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
-          }
-        }
-
-        Rectangle {
-          visible: !!f.friend && f.friend.unread > 0
-          Layout.preferredHeight: Style.space(16)
-          Layout.preferredWidth: Math.max(height, unreadLabel.implicitWidth + Style.space(10))
-          radius: height / 2
-          color: root.onlineColor
-
-          Text {
-            id: unreadLabel
-            anchors.centerIn: parent
-            text: f.friend ? String(f.friend.unread) : ""
-            color: "black"
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: true
-          }
-        }
-
-        Text {
-          visible: f.hasCursor && !(f.friend && f.friend.unread > 0)
-          text: "󰭹"
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.bodySmall
         }
       }
     }
@@ -2863,19 +3486,289 @@ Panel {
   // One chat message: yours on the right, theirs on the left, with a time
   // label over the first of each burst. Unsent messages are dimmed; failed
   // ones get a red outline.
+  // A conversation with one friend: header, messages, and a box to write
+  // in. Used by the popup's chat pane and by popped-out chat windows; each
+  // keeps its own messages and polls Steam while active.
+  component ChatView: Item {
+    id: cv
+    property var friend: null
+    property bool active: false
+    property bool popout: false
+    signal closeRequested()
+    signal popOutRequested()
+    signal tabPressed()
+
+    readonly property string accountid: friend ? String(friend.accountid) : ""
+    readonly property bool inputFocused: chatInput.activeFocus
+    property var messages: []
+    property string signature: ""
+    property bool typing: false
+    property bool loaded: false
+    property string error: ""
+
+    function focusInput() { chatInput.forceActiveFocus() }
+
+    function refresh() {
+      if (!accountid || proc.running) return
+      proc.account = accountid
+      proc.command = ["python3", root.ctlScript, "chat", accountid, "read"]
+      proc.running = true
+    }
+
+    function send() {
+      var text = String(chatInput.text || "").trim()
+      if (!text || !accountid) return
+      chatInput.text = ""
+      error = ""
+      // Shown straight away (dimmed) until Steam's copy comes back.
+      messages = messages.concat([{ mine: true, text: text, ts: Date.now() / 1000,
+        key: "local:" + Date.now(), pending: true, failed: false, showDay: false }])
+      root.runCtl(["send", accountid], text, function(ok, value, err) {
+        if (!ok) cv.error = "Couldn't send: " + err
+        cv.refresh()
+      })
+    }
+
+    // Clicking a reaction under a message adds yours, or takes it back.
+    function toggleReaction(message, reaction) {
+      if (!accountid || !message || !reaction) return
+      error = ""
+      root.runCtl(["react", accountid, String(message.ts), String(message.ordinal), String(reaction.type),
+                   reaction.name, reaction.mine ? "remove" : "add"], function(ok, value, err) {
+        if (!ok) cv.error = "Couldn't react: " + err
+        cv.refresh()
+      })
+    }
+
+    onAccountidChanged: {
+      messages = []
+      signature = ""
+      loaded = false
+      typing = false
+      error = ""
+      refresh()
+    }
+
+    Timer {
+      interval: 1500
+      running: cv.active && cv.accountid !== ""
+      repeat: true
+      onTriggered: cv.refresh()
+    }
+
+    Process {
+      id: proc
+      property string account: ""
+      stdout: StdioCollector {
+        waitForEnd: true
+        onStreamFinished: {
+          if (cv.accountid !== proc.account) return
+          var r = {}
+          try { r = JSON.parse(String(text || "{}")) } catch (e) { r = { ok: false, error: "no reply" } }
+          if (!r.ok) { cv.error = r.error || "Couldn't load the chat"; return }
+          var v = r.value || {}
+          cv.typing = !!v.typing
+          cv.loaded = true
+          var list = v.messages || []
+          var sig = JSON.stringify(list)
+          if (sig === cv.signature) return
+          cv.signature = sig
+          // A day label above the first message of each day.
+          for (var i = 0; i < list.length; i++)
+            list[i].showDay = i === 0 || new Date(list[i].ts * 1000).toDateString() !== new Date(list[i - 1].ts * 1000).toDateString()
+          cv.messages = list
+        }
+      }
+    }
+
+    ColumnLayout {
+      anchors.fill: parent
+      spacing: Style.space(8)
+
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(10)
+
+        ClippingRectangle {
+          Layout.preferredWidth: Style.space(32)
+          Layout.preferredHeight: Style.space(32)
+          radius: Style.space(4)
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+
+          Image {
+            anchors.fill: parent
+            source: cv.friend ? cv.friend.avatar : ""
+            sourceSize.width: 64
+            fillMode: Image.PreserveAspectCrop
+            asynchronous: true
+          }
+        }
+
+        ColumnLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(1)
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: cv.friend ? cv.friend.name : ""
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.bold: true
+            elide: Text.ElideRight
+          }
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: cv.typing ? "typing…" : cv.friend ? root.friendLine(cv.friend) : ""
+            color: cv.friend && cv.friend.state !== "offline" ? root.stateColor(cv.friend.state) : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+        }
+
+        PanelActionButton {
+          iconText: "󰓓"
+          tooltipText: "Open in Steam"
+          foreground: root.dim
+          fontFamily: root.fontFamily
+          fontSize: Style.font.bodySmall
+          onClicked: if (cv.friend) root.launch("steam://friends/message/" + cv.friend.steamid)
+        }
+
+        PanelActionButton {
+          visible: !cv.popout
+          iconText: "󰏌"
+          tooltipText: "Open in its own window"
+          foreground: root.dim
+          fontFamily: root.fontFamily
+          fontSize: Style.font.bodySmall
+          onClicked: cv.popOutRequested()
+        }
+
+        PanelActionButton {
+          iconText: "󰅖"
+          tooltipText: cv.popout ? "Close window" : "Close chat (Esc)"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.bodySmall
+          onClicked: cv.closeRequested()
+        }
+      }
+
+      PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+
+      // Newest message at the bottom, like any chat.
+      ListView {
+        id: chatList
+        Layout.fillWidth: true
+        Layout.fillHeight: true
+        clip: true
+        spacing: Style.space(4)
+        verticalLayoutDirection: ListView.BottomToTop
+        boundsBehavior: Flickable.StopAtBounds
+        model: cv.messages.slice().reverse()
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        delegate: ChatBubble {
+          required property var modelData
+          width: chatList.width
+          message: modelData
+          popout: cv.popout
+          onReactionClicked: function(reaction) { cv.toggleReaction(modelData, reaction) }
+        }
+
+        Text {
+          anchors.centerIn: parent
+          width: parent.width - Style.space(20)
+          horizontalAlignment: Text.AlignHCenter
+          wrapMode: Text.WordWrap
+          visible: cv.messages.length === 0
+          textFormat: Text.PlainText
+          text: cv.loaded ? "No recent messages with " + (cv.friend ? cv.friend.name : "") + ". Say hi!" : "Loading chat…"
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+      }
+
+      Text {
+        Layout.fillWidth: true
+        visible: text !== ""
+        textFormat: Text.PlainText
+        text: cv.error
+        color: root.dangerColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WordWrap
+      }
+
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(6)
+
+        TextField {
+          id: chatInput
+          Layout.fillWidth: true
+          placeholderText: cv.friend ? "Message " + cv.friend.name : ""
+          foreground: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+
+          Keys.onPressed: function(event) {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+              cv.send()
+              event.accepted = true
+            } else if (event.key === Qt.Key_Escape) {
+              if (text !== "") text = ""
+              else cv.closeRequested()
+              event.accepted = true
+            } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+              cv.tabPressed()
+              event.accepted = true
+            }
+          }
+        }
+
+        PanelActionButton {
+          iconText: "󰒊"
+          tooltipText: "Send (Enter)"
+          foreground: chatInput.text.trim() !== "" ? root.onlineColor : root.dim
+          fontFamily: root.fontFamily
+          fontSize: Style.font.body
+          onClicked: { cv.send(); chatInput.forceActiveFocus() }
+        }
+      }
+    }
+  }
+
   component ChatBubble: Item {
     id: cb
     property var message: null
+    property bool popout: false
     readonly property bool mine: !!message && message.mine
+    readonly property var cards: message && message.cards ? message.cards : []
+    readonly property bool hasText: !!message && (message.html !== undefined ? message.html !== "" : message.text !== "")
+    readonly property var reactions: message && message.reactions ? message.reactions : []
     readonly property real padX: Style.space(10)
     readonly property real padY: Style.space(6)
-    height: bubble.y + bubble.height
+    readonly property real stampGap: Style.space(8)
+    // The time sits on the text's line when a one-line message leaves room,
+    // otherwise on a line of its own at the bubble's bottom right.
+    readonly property bool stampInline: !cards.length && !!message
+      && String(message.html !== undefined ? message.html : message.text).search(/<br>|\n/) < 0
+      && msgText.implicitWidth + stampGap + stamp.implicitWidth <= cb.width * 0.82 - padX * 2
+    signal reactionClicked(var reaction)
+    height: reactionRow.visible ? reactionRow.y + reactionRow.height : bubble.y + bubble.height
 
     Text {
       id: timeLabel
-      visible: !!cb.message && !!cb.message.showTime
+      visible: !!cb.message && !!cb.message.showDay
       anchors.horizontalCenter: parent.horizontalCenter
-      text: cb.message ? root.chatTime(cb.message.ts) : ""
+      text: cb.message ? root.chatDay(cb.message.ts) : ""
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
@@ -2885,8 +3778,11 @@ Panel {
       id: bubble
       y: timeLabel.visible ? timeLabel.implicitHeight + Style.space(4) : 0
       x: cb.mine ? cb.width - width : 0
-      width: Math.min(msgText.implicitWidth + cb.padX * 2, cb.width * 0.82)
-      height: msgText.implicitHeight + cb.padY * 2
+      // Cards get a fixed width; text alone hugs its words.
+      width: cb.cards.length ? Math.min(cb.width * 0.82, Style.space(300))
+        : cb.stampInline ? msgText.implicitWidth + cb.stampGap + stamp.implicitWidth + cb.padX * 2
+        : Math.min(Math.max(msgText.implicitWidth, stamp.implicitWidth) + cb.padX * 2, cb.width * 0.82)
+      height: content.implicitHeight + cb.padY * 2 + (cb.stampInline ? 0 : stamp.implicitHeight + Style.space(2))
       radius: Style.space(10)
       color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, cb.mine ? 0.18 : 0.07)
       border.width: cb.message && cb.message.failed ? 1 : 0
@@ -2894,27 +3790,577 @@ Panel {
       opacity: cb.message && cb.message.pending ? 0.55 : 1
 
       Text {
-        id: msgText
+        id: stamp
+        anchors.right: parent.right
+        anchors.rightMargin: cb.padX
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: cb.padY
+        text: !cb.message ? "" : cb.message.failed ? "not sent" : cb.message.pending ? "sending…" : root.chatTime(cb.message.ts)
+        color: cb.message && cb.message.failed ? root.dangerColor : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption * 0.9
+      }
+
+      Column {
+        id: content
         x: cb.padX
         y: cb.padY
-        width: bubble.width - cb.padX * 2
-        // steamctl.py sends a StyledText copy with links and emoticons; the
-        // local echo of a message you just sent is plain until Steam's arrives.
-        textFormat: cb.message && cb.message.html !== undefined ? Text.StyledText : Text.PlainText
-        text: !cb.message ? "" : cb.message.html !== undefined ? cb.message.html : cb.message.text
-        wrapMode: Text.Wrap
-        color: root.foreground
-        linkColor: root.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.bodySmall
-        onLinkActivated: function(link) { Qt.openUrlExternally(link) }
+        width: bubble.width - cb.padX * 2 - (cb.stampInline ? cb.stampGap + stamp.implicitWidth : 0)
+        spacing: Style.space(6)
 
-        HoverHandler {
-          cursorShape: msgText.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
+        Text {
+          id: msgText
+          width: parent.width
+          visible: cb.hasText
+          // steamctl.py sends a StyledText copy with links and emoticons; the
+          // local echo of a message you just sent is plain until Steam's arrives.
+          textFormat: cb.message && cb.message.html !== undefined ? Text.StyledText : Text.PlainText
+          text: !cb.message ? "" : cb.message.html !== undefined ? cb.message.html : cb.message.text
+          wrapMode: Text.Wrap
+          color: root.foreground
+          linkColor: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          onLinkActivated: function(link) { Qt.openUrlExternally(link) }
+
+          HoverHandler {
+            cursorShape: msgText.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor
+          }
+        }
+
+        Repeater {
+          model: cb.cards
+          delegate: Column {
+            required property var modelData
+            width: content.width
+
+            ChatCard {
+              visible: ["tag", "video", "youtube"].indexOf(modelData.type) < 0
+              width: parent.width
+              card: visible ? modelData : null
+              popout: cb.popout
+            }
+
+            VideoCard {
+              visible: modelData.type === "video"
+              width: parent.width
+              card: visible ? modelData : null
+            }
+
+            YouTubeCard {
+              visible: modelData.type === "youtube"
+              width: parent.width
+              card: visible ? modelData : null
+            }
+
+            TagCard {
+              visible: modelData.type === "tag"
+              width: parent.width
+              card: visible ? modelData : null
+            }
+          }
+        }
+      }
+    }
+
+    // Reactions sit under the bubble, on its side; yours are highlighted.
+    Flow {
+      id: reactionRow
+      visible: cb.reactions.length > 0
+      y: bubble.y + bubble.height + Style.space(3)
+      x: cb.mine ? cb.width - width : Style.space(4)
+      width: Math.min(implicitWidth, cb.width * 0.82)
+      spacing: Style.space(4)
+      layoutDirection: cb.mine ? Qt.RightToLeft : Qt.LeftToRight
+
+      Repeater {
+        model: cb.reactions
+        delegate: Rectangle {
+          id: pill
+          required property var modelData
+          readonly property string emoticon: String(modelData.name || "").replace(/^:|:$/g, "")
+          width: pillRow.implicitWidth + Style.space(12)
+          height: Style.space(22)
+          radius: height / 2
+          color: modelData.mine ? Qt.rgba(root.onlineColor.r, root.onlineColor.g, root.onlineColor.b, 0.22)
+            : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, pillMouse.containsMouse ? 0.14 : 0.07)
+          border.width: modelData.mine ? 1 : 0
+          border.color: root.onlineColor
+
+          Row {
+            id: pillRow
+            anchors.centerIn: parent
+            spacing: Style.space(4)
+
+            Image {
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.space(16)
+              height: width
+              source: "https://steamcommunity-a.akamaihd.net/economy/" + (pill.modelData.type === 1 ? "emoticon/" : "sticker/")
+                + encodeURIComponent(pill.emoticon)
+              sourceSize.width: 32
+              fillMode: Image.PreserveAspectFit
+              asynchronous: true
+            }
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: String(pill.modelData.count)
+              color: pill.modelData.mine ? root.foreground : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: pill.modelData.mine
+            }
+          }
+
+          MouseArea {
+            id: pillMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: cb.reactionClicked(pill.modelData)
+          }
+
+          ToolTip.visible: pillMouse.containsMouse
+          ToolTip.delay: 400
+          ToolTip.text: (pill.modelData.mine ? "Take back your " : "React with ") + pill.modelData.name
         }
       }
     }
   }
+
+  // A video shared through Steam: plays in the bubble once you press play
+  // (nothing downloads before), or in a window of its own.
+  component VideoCard: ClippingRectangle {
+    id: vc
+    property var card: null
+    property bool started: false
+    implicitHeight: card ? width * 9 / 16 : 0
+    radius: Style.space(6)
+    color: "black"
+
+    Loader {
+      id: inline
+      anchors.fill: parent
+      active: vc.started && !!vc.card
+      sourceComponent: Video {
+        source: vc.card ? vc.card.src : ""
+        volume: 0.7
+        fillMode: VideoOutput.PreserveAspectFit
+        Component.onCompleted: play()
+      }
+    }
+
+    readonly property var player: inline.item
+    readonly property bool playing: !!player && player.playbackState === MediaPlayer.PlayingState
+
+    function toggle() {
+      if (!started) { started = true; return }
+      if (player) { if (playing) player.pause(); else player.play() }
+    }
+
+    MouseArea {
+      id: vcMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: vc.toggle()
+    }
+
+    Column {
+      anchors.centerIn: parent
+      visible: !vc.playing
+      spacing: Style.space(2)
+
+      Text {
+        anchors.horizontalCenter: parent.horizontalCenter
+        text: "󰐊"
+        color: "white"
+        style: Text.Outline
+        styleColor: Qt.rgba(0, 0, 0, 0.5)
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.display * 1.4
+      }
+
+      Text {
+        anchors.horizontalCenter: parent.horizontalCenter
+        visible: !vc.started
+        text: "VIDEO"
+        color: Qt.rgba(1, 1, 1, 0.7)
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1
+      }
+    }
+
+    // On hover: position and length, sound, and a window of its own.
+    Row {
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      anchors.margins: Style.space(4)
+      spacing: Style.space(4)
+      visible: vcMouse.containsMouse || vcControls.hovered
+      HoverHandler { id: vcControls }
+
+      Rectangle {
+        visible: !!vc.player
+        width: timeText.implicitWidth + Style.space(10)
+        height: Style.space(20)
+        radius: Style.space(4)
+        color: Qt.rgba(0, 0, 0, 0.6)
+        anchors.verticalCenter: parent.verticalCenter
+
+        Text {
+          id: timeText
+          anchors.centerIn: parent
+          text: vc.player ? root.mediaTime(vc.player.position) + " / " + root.mediaTime(vc.player.duration) : ""
+          color: "white"
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+
+      Item { width: parent.width - (vc.player ? timeText.implicitWidth + Style.space(10) : 0) - muteBtn.width - windowBtn.width - Style.space(12); height: 1 }
+
+      PanelActionButton {
+        id: muteBtn
+        visible: !!vc.player
+        iconText: vc.player && vc.player.muted ? "󰝟" : "󰕾"
+        tooltipText: vc.player && vc.player.muted ? "Unmute" : "Mute"
+        foreground: "white"
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        onClicked: if (vc.player) vc.player.muted = !vc.player.muted
+      }
+
+      PanelActionButton {
+        id: windowBtn
+        iconText: "󰏌"
+        tooltipText: "Play in its own window"
+        foreground: "white"
+        fontFamily: root.fontFamily
+        fontSize: Style.font.bodySmall
+        onClicked: {
+          var at = vc.player ? vc.player.position : 0
+          if (vc.player) vc.player.pause()
+          root.openVideo(vc.card.src, at)
+        }
+      }
+    }
+
+    // A thin progress line along the bottom while it plays.
+    Rectangle {
+      visible: !!vc.player && vc.player.duration > 0
+      anchors.left: parent.left
+      anchors.bottom: parent.bottom
+      height: Style.space(2)
+      width: vc.player && vc.player.duration > 0 ? parent.width * vc.player.position / vc.player.duration : 0
+      color: root.onlineColor
+    }
+  }
+
+  // A YouTube link: thumbnail, title and channel. Plays in mpv's window
+  // (falling back to the browser); the corner button opens the browser.
+  component YouTubeCard: ClippingRectangle {
+    id: yc
+    property var card: null
+    readonly property real pad: Style.space(8)
+    implicitHeight: card ? thumb.height + ytInfo.implicitHeight + pad * 2 : 0
+    radius: Style.space(6)
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, ycHover.hovered ? 0.12 : 0.06)
+
+    HoverHandler { id: ycHover }
+
+    Image {
+      id: thumb
+      width: parent.width
+      height: width * 9 / 16
+      // mqdefault is the one thumbnail size YouTube always has, already 16:9.
+      source: yc.card ? "https://i.ytimg.com/vi/" + yc.card.id + "/mqdefault.jpg" : ""
+      sourceSize.width: 320
+      fillMode: Image.PreserveAspectCrop
+      asynchronous: true
+
+      Rectangle {
+        anchors.centerIn: parent
+        width: Style.space(48)
+        height: Style.space(34)
+        radius: Style.space(8)
+        color: ycHover.hovered ? "#ff0033" : Qt.rgba(0.1, 0.1, 0.1, 0.8)
+
+        Text {
+          anchors.centerIn: parent
+          text: "󰐊"
+          color: "white"
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.title
+        }
+      }
+    }
+
+    Column {
+      id: ytInfo
+      x: yc.pad
+      y: thumb.height + yc.pad
+      width: yc.width - yc.pad * 2
+      spacing: Style.space(2)
+
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        text: "YOUTUBE" + (yc.card && yc.card.author ? " · " + yc.card.author.toUpperCase() : "")
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1
+        elide: Text.ElideRight
+      }
+
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        text: yc.card ? yc.card.title || yc.card.url : ""
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.bold: true
+        wrapMode: Text.Wrap
+        maximumLineCount: 2
+        elide: Text.ElideRight
+      }
+    }
+
+    MouseArea {
+      id: ycMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.playYoutube(yc.card)
+    }
+
+    PanelActionButton {
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.margins: Style.space(4)
+      visible: ycHover.hovered
+      iconText: "󰏌"
+      tooltipText: "Open in browser"
+      foreground: "white"
+      fontFamily: root.fontFamily
+      fontSize: Style.font.bodySmall
+      onClicked: if (yc.card) Qt.openUrlExternally(yc.card.url)
+    }
+  }
+
+  // A Steam tag this widget doesn't draw ([og], [video], [roomeffect], ...):
+  // its name, the fields it carries and any text, with the original to copy.
+  component TagCard: Rectangle {
+    id: tc
+    property var card: null
+    property bool copied: false
+    readonly property real pad: Style.space(8)
+    implicitHeight: card ? tagCol.implicitHeight + pad * 2 : 0
+    radius: Style.space(6)
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+    border.width: 1
+    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+
+    Timer { id: copiedReset; interval: 1500; onTriggered: tc.copied = false }
+
+    Column {
+      id: tagCol
+      x: tc.pad
+      y: tc.pad
+      width: tc.width - tc.pad * 2
+      spacing: Style.space(3)
+
+      RowLayout {
+        width: parent.width
+        spacing: Style.space(6)
+
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: tc.card ? "[" + tc.card.tag + "]" : ""
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          elide: Text.ElideRight
+        }
+
+        Text {
+          visible: tc.copied
+          text: "Copied"
+          color: root.onlineColor
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        PanelActionButton {
+          iconText: tc.copied ? "󰄬" : "󰆏"
+          tooltipText: "Copy the tag"
+          foreground: tc.copied ? root.onlineColor : root.dim
+          fontFamily: root.fontFamily
+          fontSize: Style.font.bodySmall
+          onClicked: {
+            if (!tc.card) return
+            root.copyText(tc.card.raw)
+            tc.copied = true
+            copiedReset.restart()
+          }
+        }
+      }
+
+      Repeater {
+        model: tc.card ? tc.card.fields : []
+        delegate: Text {
+          required property var modelData
+          width: tagCol.width
+          textFormat: Text.PlainText
+          text: (modelData[0] !== "" ? modelData[0] + ": " : "= ") + modelData[1]
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.WrapAnywhere
+          maximumLineCount: 3
+          elide: Text.ElideRight
+        }
+      }
+
+      Text {
+        width: parent.width
+        visible: !!tc.card && tc.card.body !== ""
+        textFormat: Text.PlainText
+        text: tc.card ? tc.card.body : ""
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.WrapAnywhere
+        maximumLineCount: 6
+        elide: Text.ElideRight
+      }
+    }
+  }
+
+  // A shared store page or Workshop item: art, title and the gist, opening
+  // the game's store page (here in the popup) or the item on click.
+  component ChatCard: ClippingRectangle {
+    id: cc
+    property var card: null
+    property bool popout: false
+    readonly property bool isStore: !!card && card.type === "store"
+    readonly property bool isImage: !!card && card.type === "image"
+    // An image is just its thumbnail, unless it fails to load.
+    readonly property bool showInfo: !isImage || art.status === Image.Error
+    readonly property var game: card ? root.gameById(card.appid) : null
+    readonly property real pad: Style.space(8)
+    implicitHeight: art.height + (showInfo ? info.implicitHeight + pad * 2 : 0)
+    radius: Style.space(6)
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, cardMouse.containsMouse ? 0.12 : 0.06)
+
+    function open() {
+      if (!card) return
+      if (isImage) root.openImage(card.src)
+      else if (!isStore) Qt.openUrlExternally(card.url)
+      else if (popout) root.launch("steam://store/" + card.appid)
+      else root.openStore({ appid: card.appid, name: game ? game.name : card.name })
+    }
+
+    Image {
+      id: art
+      width: parent.width
+      // Store headers are 460x215; Workshop previews are cropped to 16:9;
+      // images keep their shape (very tall ones are cropped).
+      height: status === Image.Error || source == "" ? 0 : width * (cc.isStore ? 215 / 460
+        : cc.isImage && cc.card.width > 0 && cc.card.height > 0 ? Math.min(cc.card.height / cc.card.width, 1.25) : 9 / 16)
+      source: !cc.card ? "" : cc.isImage ? cc.card.thumb : cc.isStore
+        ? (cc.game && cc.game.header ? cc.game.header : cc.card.header
+          || "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/" + cc.card.appid + "/header.jpg")
+        : cc.card.preview || ""
+      sourceSize.width: 600
+      fillMode: Image.PreserveAspectCrop
+      asynchronous: true
+    }
+
+    Column {
+      id: info
+      visible: cc.showInfo
+      x: cc.pad
+      y: art.height + cc.pad
+      width: cc.width - cc.pad * 2
+      spacing: Style.space(2)
+
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        text: cc.isImage ? "IMAGE" : cc.isStore ? (cc.game ? "STEAM STORE · IN YOUR LIBRARY" : "STEAM STORE")
+          : "WORKSHOP" + (cc.game ? " · " + cc.game.name.toUpperCase() : "")
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1
+        elide: Text.ElideRight
+      }
+
+      Text {
+        width: parent.width
+        textFormat: Text.PlainText
+        text: !cc.card ? "" : cc.isImage ? "Couldn't load the preview. Click to open it."
+          : cc.isStore ? (cc.game ? cc.game.name : cc.card.name || "App " + cc.card.appid)
+          : cc.card.title || "Workshop item"
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.bold: true
+        wrapMode: Text.Wrap
+        maximumLineCount: 2
+        elide: Text.ElideRight
+      }
+
+      Text {
+        width: parent.width
+        visible: !cc.isStore && !!cc.card && !!cc.card.description
+        textFormat: Text.PlainText
+        text: cc.card && cc.card.description ? cc.card.description : ""
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.Wrap
+        maximumLineCount: 3
+        elide: Text.ElideRight
+      }
+
+      Text {
+        width: parent.width
+        visible: !cc.isStore && !!cc.card && (cc.card.votesUp + cc.card.votesDown > 0 || cc.card.comments > 0)
+        textFormat: Text.PlainText
+        text: {
+          if (!cc.card || cc.isStore) return ""
+          var parts = [], votes = cc.card.votesUp + cc.card.votesDown
+          if (votes > 0) parts.push("󰔓 " + Math.round(cc.card.votesUp * 100 / votes) + "% of " + votes)
+          if (cc.card.comments > 0) parts.push("󰆉 " + cc.card.comments)
+          return parts.join("   ")
+        }
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+
+    MouseArea {
+      id: cardMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: cc.open()
+    }
+  }
+
 
   // Smoothed progress for a download. Steam's figures arrive every couple of
   // seconds and in bursts, so between samples this runs ahead at the current

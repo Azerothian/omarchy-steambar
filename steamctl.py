@@ -16,6 +16,8 @@ client's own UI uses. This is how Decky Loader talks to Steam too.
   steamctl.py friends               -> friend list with live presence and unread counts
   steamctl.py chat <accountid> [read]
                                     -> recent messages with a friend ("read" marks them read)
+  steamctl.py react <accountid> <ts> <ordinal> <type> <reaction> add|remove
+                                    -> react to a message (or take it back)
   steamctl.py send <accountid>      -> send the chat message read from stdin
                                        (never argv, where other users can see it)
   steamctl.py wizard-state          -> install wizard state (8 = showing a EULA)
@@ -26,11 +28,14 @@ Every command prints {"ok": true, "value": ...} or {"ok": false, "error": ...}.
 import base64
 import json
 import os
+import re
 import socket
 import struct
 import sys
 import urllib.error
 import urllib.request
+
+import cache
 
 PORT = 8080
 # Byte ceilings for what Steam's debug port hands back, and for what's
@@ -38,6 +43,7 @@ PORT = 8080
 MAX_TARGETS = 1024 * 1024
 MAX_MESSAGE = 16 * 1024 * 1024
 MAX_OUTPUT = 8 * 1024 * 1024
+MAX_APPINFO = 1024 * 1024
 
 
 def target_ws():
@@ -282,27 +288,53 @@ FRIENDS_JS = """
 (() => {
   const app = g_FriendsUIApp
   const states = ["offline", "online", "busy", "away", "away", "online", "online"]
-  return Array.from(app.FriendStore.all_friends || []).map(f => {
+  // The user's own friend groups (Steam's categories) and favorites, as the
+  // client's friend list shows them.
+  const store = app.FriendStore.FriendGroupStore
+  const groups = Array.from((store && store.user_groups) || []).map(g => ({
+    id: String(g.m_iGroupID), name: g.m_strName || "", members: Array.from(g.m_rgAccountIDMembers || []),
+  }))
+  let favorites = []
+  try {
+    favorites = Array.from(app.FriendStore.FavoritesStore.favorites || [])
+      .filter(x => x && x.friend).map(x => x.friend.accountid)
+  } catch (e) {}
+  const memberOf = {}
+  for (const g of groups) for (const a of g.members) (memberOf[a] = memberOf[a] || []).push(g.id)
+  for (const a of favorites) (memberOf[a] = memberOf[a] || []).unshift("favorites")
+  const friends = Array.from(app.FriendStore.all_friends || []).map(f => {
     const p = f.m_persona || {}
     const appid = p.m_unGamePlayedAppID || 0
     const inGame = appid > 0 || (p.m_gameid && p.m_gameid !== "0")
-    let game = p.m_strGameExtraInfo || ""
+    let game = p.m_strGameExtraInfo || f.current_game_name || ""
     if (!game && appid) {
       try { game = (app.AppInfoStore.GetAppInfo(appid) || {}).name || "" } catch (e) {}
     }
+    let presence = ""
+    try { presence = f.current_game_rich_presence || "" } catch (e) {}
     const chat = app.ChatStore.GetFriendChat(f.accountid, false)
+    const persona = p.m_strPlayerName || ""
+    const name = f.display_name || f.m_strNickname || persona || String(f.accountid)
     return {
       accountid: String(f.accountid),
       steamid: String(p.m_steamid && p.m_steamid.ConvertTo64BitString ? p.m_steamid.ConvertTo64BitString() : ""),
-      name: f.m_strNickname || p.m_strPlayerName || String(f.accountid),
+      name: name,
+      personaName: persona && persona !== name ? persona : "",
       avatar: p.m_strAvatarHash ? "https://avatars.fastly.steamstatic.com/" + p.m_strAvatarHash + "_medium.jpg" : "",
       state: inGame && (p.m_ePersonaState || 0) !== 0 ? "in-game" : states[p.m_ePersonaState || 0] || "online",
       game: game,
+      presence: presence,
+      groups: memberOf[f.accountid] || [],
       lastOnline: p.m_rtLastSeenOnline || 0,
       unread: chat ? chat.unread_message_count || 0 : 0,
       lastMessage: chat ? chat.time_last_message || 0 : 0,
     }
   })
+  return {
+    friends: friends,
+    groups: (favorites.length ? [{ id: "favorites", name: "Favorites" }] : [])
+      .concat(groups.map(g => ({ id: g.id, name: g.name }))),
+  }
 })()
 """
 
@@ -323,15 +355,24 @@ CHAT_JS = """
     .replace(/\\[\\/?[a-z]+[^\\]]*\\]/gi, "")
     .replace(/\\u0001/g, "[")
   const html = %(html)s
-  const msgs = chat.chat_messages.slice(-80).map(m => ({
+  const embeds = %(embeds)s
+  const msgs = chat.chat_messages.slice(-80).map(m => {
+    const e = embeds(m.strMessage !== undefined ? m.strMessage : m.strMessageInternal)
+    return {
     mine: m.unAccountID === me,
-    text: plain(m.strMessage !== undefined ? m.strMessage : m.strMessageInternal),
-    html: html(m.strMessage !== undefined ? m.strMessage : m.strMessageInternal),
+    text: plain(e.rest).trim(),
+    html: html(e.rest.trim()),
+    cards: e.cards,
+    // Emoticon (type 1) or sticker reactions: how many, and whether you're one.
+    reactions: (m.m_rgReactions || []).map(r => ({
+      type: r.eReactionType, name: r.strReaction, count: r.cReactors, mine: !!r.bUserReacted,
+    })),
+    ordinal: m.unOrdinal,
     ts: m.rtTimestamp,
     key: m.rtTimestamp + ":" + m.unOrdinal + ":" + (m.m_iLocalEchoID || 0),
     pending: m.unAccountID === me && !m.m_bServerAcknowledged && m.unOrdinal < 0,
     failed: !!(m.eErrorSending || m.eErrorSendingObservable),
-  }))
+  }})
   return { messages: msgs, typing: !!chat.is_friend_typing, unread: chat.unread_message_count || 0 }
 })()
 """
@@ -404,6 +445,97 @@ HTML_JS = r"""(s => {
   return out.join("")
 })"""
 
+# Store links and Workshop items arrive as [steamstore] and [publishedfile]
+# tags; lift them out of the text as cards the chat bubble draws.
+EMBEDS_JS = r"""(s => {
+  const cards = []
+  // Values come quoted (with \" escapes) or bare, as [img src=... width=949].
+  const attr = (a, key) => {
+    const r = new RegExp("\\b" + key + '=(?:"((?:[^"\\\\]|\\\\.)*)"|([^\\s"\\]]+))').exec(a || "")
+    return !r ? "" : r[1] !== undefined ? r[1].replace(/\\(.)/g, "$1") : r[2]
+  }
+  const num = v => parseInt(v, 10) || 0
+  const rest = String(s || "").replace(/\[(publishedfile|steamstore)(\s[^\]]*)?\]([\s\S]*?)\[\/\1\]/gi, (all, tag, a, body) => {
+    body = body.trim()
+    if (tag.toLowerCase() === "steamstore") {
+      const appid = num(attr(a, "app")) || num((body.match(/\/app\/(\d+)/) || [])[1])
+      if (!appid) return all
+      // The link's slug is the game's name (Lightyear_Frontier).
+      let name = (body.match(/\/app\/\d+\/([^\/?#]+)/) || [])[1] || ""
+      try { name = decodeURIComponent(name) } catch (e) {}
+      cards.push({ type: "store", appid: appid, name: name.replace(/_/g, " ").trim(),
+        url: /^https?:/.test(body) ? body : "https://store.steampowered.com/app/" + appid })
+    } else {
+      const url = attr(a, "url") || body
+      if (!/^https?:/.test(url)) return all
+      cards.push({ type: "workshop", url: url, title: attr(a, "title"), description: attr(a, "description"),
+        preview: attr(a, "preview_url"), appid: num(attr(a, "creator_appid")),
+        votesUp: num(attr(a, "votes_up")), votesDown: num(attr(a, "votes_down")),
+        comments: num(attr(a, "num_comments_public")) })
+    }
+    return ""
+  })
+  // Shared images: [img src=... thumbnail_src=... width=... height=...][url=...]...[/url][/img],
+  // or plainly [img]https://...[/img].
+  const left = rest.replace(/\[img(\s[^\]]*)?\]([\s\S]*?)\[\/img\]/gi, (all, a, body) => {
+    const src = attr(a, "src") || (body.match(/https?:\/\/[^\s\[\]"]+/) || [""])[0]
+    if (!/^https?:/.test(src)) return all
+    cards.push({ type: "image", src: src, thumb: attr(a, "thumbnail_src") || src,
+      width: num(attr(a, "width")), height: num(attr(a, "height")) })
+    return ""
+  })
+  // Steam-hosted videos and YouTube links get players of their own.
+  const media = left
+    .replace(/\[video(\s[^\]]*)?\]([\s\S]*?)\[\/video\]/gi, (all, a, body) => {
+      const src = attr(a, "src") || (body.match(/https?:\/\/[^\s\[\]"]+/) || [""])[0]
+      if (!/^https:\/\//.test(src)) return all
+      cards.push({ type: "video", src: src, mime: attr(a, "type") })
+      return ""
+    })
+    .replace(/\[youtube(=[^\s\]]+)?(\s[^\]]*)?\]([\s\S]*?)\[\/youtube\]/gi, (all, first, a, body) => {
+      const url = (first || "").slice(1) || body.trim()
+      const id = attr(a, "v") || (url.match(/(?:v=|youtu\.be\/|shorts\/)([\w-]{11})/) || [])[1] || ""
+      if (!/^[\w-]{11}$/.test(id)) return all
+      cards.push({ type: "youtube", id: id, url: "https://www.youtube.com/watch?v=" + id })
+      return ""
+    })
+  // Any other Steam tag ([og], [roomeffect], ...) becomes a card
+  // listing what it carries, with the original to copy. Plain bracketed
+  // text like [brb] has no closing tag or fields, so it stays as typed.
+  const RENDERED = /^(url|b|i|u|emoticon|sticker)$/i
+  const fields = a => {
+    const out = []
+    a = a || ""
+    const first = /^=("[^"]*"|[^\s\]]+)/.exec(a)
+    if (first) out.push(["", first[1].replace(/^"|"$/g, "")])
+    const re = /([a-z_][a-z0-9_]*)=(?:"((?:[^"\\]|\\.)*)"|([^\s"\]]+))/gi
+    let m
+    while ((m = re.exec(a.slice(first ? first[0].length : 0))) && out.length < 20)
+      out.push([m[1], m[2] !== undefined ? m[2].replace(/\\(.)/g, "$1") : m[3]])
+    return out
+  }
+  const tagCard = (all, tag, a, body) => {
+    if (RENDERED.test(tag)) return all
+    cards.push({ type: "tag", tag: tag.toLowerCase(), fields: fields(a), body: (body || "").replace(/\[\/?[a-z][^\]]*\]/gi, "").trim().slice(0, 2000),
+      raw: all.slice(0, 20000) })
+    return ""
+  }
+  const tagged = media
+    .replace(/\[([a-z][a-z0-9_]*)((?:=|\s)[^\]]*)?\]([\s\S]*?)\[\/\1\]/gi, tagCard)
+    .replace(/\[([a-z][a-z0-9_]*)(\s+[a-z_][a-z0-9_]*=[^\]]*)\]/gi, (all, tag, a) => tagCard(all, tag, a, ""))
+  return { rest: tagged, cards: cards }
+})"""
+
+# Add or take back your reaction on one message, as Steam's own chat does.
+REACT_JS = """
+(async () => {
+  const chat = g_FriendsUIApp.ChatStore.GetFriendChat(%(account)d, true)
+  const m = chat.chat_messages.find(m => m.rtTimestamp === %(ts)d && m.unOrdinal === %(ordinal)d)
+  if (!m) throw new Error("That message isn't loaded any more")
+  return await chat.UpdateMessageReaction(m, %(type)d, %(reaction)s, %(add)s)
+})()
+"""
+
 SEND_JS = """
 (() => {
   const chat = g_FriendsUIApp.ChatStore.GetFriendChat(%(account)d, true)
@@ -411,6 +543,58 @@ SEND_JS = """
   return "sent"
 })()
 """
+
+
+def store_app(appid):
+    """Name and header art for a shared store link. Newer games keep their
+    art under a hashed path only the store's API knows, so ask it once and
+    keep the answer (a failed lookup is retried after an hour)."""
+    if not isinstance(appid, int) or appid <= 0:
+        return {}
+    info = cache.load_app(appid, 30 * 86400)
+    if info or (info == {} and cache.load_app(appid, 3600) is not None):
+        return info
+    info = {}
+    try:
+        url = "https://store.steampowered.com/api/appdetails?appids=%d&filters=basic" % appid
+        with urllib.request.urlopen(url, timeout=4) as r:
+            body = r.read(MAX_APPINFO + 1)
+        data = json.loads(body) if len(body) <= MAX_APPINFO else {}
+        d = (data.get(str(appid)) or {}).get("data") or {}
+        if isinstance(d.get("name"), str):
+            info["name"] = d["name"][:256]
+        if isinstance(d.get("header_image"), str) and d["header_image"].startswith("https://"):
+            info["header"] = d["header_image"][:2048]
+    except Exception:
+        pass
+    cache.save_app(appid, info)
+    return info
+
+
+def youtube_info(video_id):
+    """Title and channel for a shared YouTube link, from YouTube's oEmbed
+    endpoint, kept like store_app's answers."""
+    if not isinstance(video_id, str) or not re.fullmatch(r"[\w-]{11}", video_id):
+        return {}
+    key = "youtube:" + video_id
+    info = cache.load_embed(key, 30 * 86400)
+    if info or (info == {} and cache.load_embed(key, 3600) is not None):
+        return info
+    info = {}
+    try:
+        url = ("https://www.youtube.com/oembed?format=json&url="
+               + urllib.request.quote("https://www.youtube.com/watch?v=" + video_id, safe=""))
+        with urllib.request.urlopen(url, timeout=4) as r:
+            body = r.read(MAX_APPINFO + 1)
+        d = json.loads(body) if len(body) <= MAX_APPINFO else {}
+        if isinstance(d.get("title"), str):
+            info["title"] = d["title"][:300]
+        if isinstance(d.get("author_name"), str):
+            info["author"] = d["author_name"][:200]
+    except Exception:
+        pass
+    cache.save_embed(key, info)
+    return info
 
 
 def main(argv):
@@ -423,10 +607,28 @@ def main(argv):
         # What Steam's own "Uninstall" confirmation calls once you confirm.
         return evaluate('SteamClient.Installs.OpenUninstallWizard([%d], true); "uninstalling"' % int(argv[2]))
     if cmd == "friends":
-        return evaluate(FRIENDS_JS)
+        value = evaluate(FRIENDS_JS)
+        if isinstance(value, dict):
+            cache.save_friends(value.get("friends") or [], value.get("groups") or [])
+        return value
     if cmd == "chat":
         read = "true" if len(argv) > 3 and argv[3] == "read" else "false"
-        return evaluate(CHAT_JS % {"account": int(argv[2]), "read": read, "html": HTML_JS})
+        value = evaluate(CHAT_JS % {"account": int(argv[2]), "read": read, "html": HTML_JS, "embeds": EMBEDS_JS})
+        for m in value.get("messages", []) if isinstance(value, dict) else []:
+            for card in m.get("cards") or []:
+                if card.get("type") == "store":
+                    card.update(store_app(card.get("appid")))
+                elif card.get("type") == "youtube":
+                    card.update(youtube_info(card.get("id")))
+        return value
+    if cmd == "react":
+        # react <account> <timestamp> <ordinal> <type> <reaction> <add|remove>
+        reaction = argv[6]
+        if not re.fullmatch(r":?[\w-]{1,64}:?", reaction):
+            raise ValueError("not a reaction: %s" % reaction)
+        return evaluate(REACT_JS % {"account": int(argv[2]), "ts": int(argv[3]), "ordinal": int(argv[4]),
+                                    "type": int(argv[5]), "reaction": json.dumps(reaction),
+                                    "add": "true" if argv[7] == "add" else "false"})
     if cmd == "send":
         return evaluate(SEND_JS % {"account": int(argv[2]), "text": json.dumps(sys.stdin.read())})
     if cmd == "wizard-state":

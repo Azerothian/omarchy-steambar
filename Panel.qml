@@ -174,28 +174,57 @@ Panel {
     return out
   }
 
+  // Which computer the library shows ("" every one, "local" this one, or
+  // a Remote Play computer's id), and whether it's split into a section
+  // per computer (the default when other computers have games to stream).
+  property string libraryPc: ""
+  readonly property bool groupByPc: pref("groupByPc", true) !== false
+  readonly property bool hasStreams: remoteDevices.length > 0 && Object.keys(remoteApps).length > 0
+
   readonly property var libraryGames: {
     var q = filterText.trim().toLowerCase()
-    var out = []
-    for (var j = 0; j < games.length; j++) {
-      var g = games[j]
-      if (q !== "" && g.name.toLowerCase().indexOf(q) < 0) continue
+    function keep(g, here) {
+      if (q !== "" && g.name.toLowerCase().indexOf(q) < 0) return false
       // Installed counts games you can stream from another computer too.
-      var here = g.installed || streamable(g)
-      if (installedOnly && !here) continue
-      if (uninstalledOnly && here) continue
-      if (mostPlayed && !(g.playtime > 0)) continue
-      out.push(g)
+      if (installedOnly && !here) return false
+      if (uninstalledOnly && here) return false
+      if (mostPlayed && !(g.playtime > 0)) return false
+      return true
     }
-    // Most played: by hours. Otherwise installed first, then by name.
-    out.sort(function(a, b) {
+    function byName(a, b) {
       if (mostPlayed && a.playtime !== b.playtime) return b.playtime - a.playtime
-      // Installed here, then streamable, then the rest.
+      return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1
+    }
+    function onPc(g, id) { return (remoteApps[String(g.appid)] || []).indexOf(id) >= 0 }
+    function from(list, device) { return list.map(function(g) { return Object.assign({}, g, { streamDevice: device }) }) }
+
+    var pcs = hasStreams ? remoteDevices : []
+    var only = hasStreams ? libraryPc : ""
+    if (hasStreams && groupByPc) {
+      var sections = [{ id: "local", name: "This computer", list: games.filter(function(g) { return g.installed && keep(g, true) }) }]
+      pcs.forEach(function(d) {
+        sections.push({ id: d.id, name: d.name, list: from(games.filter(function(g) { return onPc(g, d.id) && keep(g, true) }), d) })
+      })
+      sections.push({ id: "none", name: "Not installed", list: games.filter(function(g) { return !g.installed && !streamable(g) && keep(g, false) }) })
+      var out = []
+      sections.forEach(function(sec) {
+        if (!sec.list.length || (only !== "" && only !== sec.id)) return
+        out.push({ isHeader: true, name: sec.name, count: sec.list.length, sectionId: sec.id, first: out.length === 0 })
+        out = out.concat(sec.list.sort(byName))
+      })
+      return out
+    }
+
+    var flat = only === "local" ? games.filter(function(g) { return g.installed && keep(g, true) })
+      : only !== "" ? from(games.filter(function(g) { return onPc(g, only) && keep(g, true) }),
+                           pcs.filter(function(d) { return d.id === only })[0])
+      : games.filter(function(g) { return keep(g, g.installed || streamable(g)) })
+    // Installed here, then streamable, then the rest.
+    return flat.sort(function(a, b) {
       var ra = a.installed ? 0 : streamable(a) ? 1 : 2, rb = b.installed ? 0 : streamable(b) ? 1 : 2
       if (!mostPlayed && ra !== rb) return ra - rb
-      return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1
+      return byName(a, b)
     })
-    return out
   }
 
   // The selected store list, marked with what you own and have installed so
@@ -699,6 +728,16 @@ Panel {
 
   function streamable(game) { return !!game && !game.installed && (remoteApps[String(game.appid)] || []).length > 0 }
 
+  // Remote Play another computer's whole desktop.
+  function streamDesktop(device) {
+    if (!device) return
+    actionError = ""
+    runCtl(["desktop", device.id], function(ok, value, error) {
+      if (!ok) root.actionError = "Couldn't start Remote Play on " + device.name + ": " + error
+    })
+    close()
+  }
+
   function streamGame(game, device) {
     if (!game || !device) return
     actionError = ""
@@ -1126,6 +1165,8 @@ Panel {
     else if (root.tab === "friends") chatWith(item)
     else if (root.tab === "groups") chatWithGroup(item)
     else if (root.tab === "store" && !item.owned) openStore(item)
+    else if (item.isHeader) return
+    else if (item.streamDevice) streamGame(item, item.streamDevice)
     else if (item.installed) launch("steam://rungameid/" + item.appid)
     else if (streamable(item)) streamGame(item, streamDevices(item)[0])
     else if (downloadsById[item.appid]) toggleDownload(downloadsById[item.appid])
@@ -2162,6 +2203,7 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       blocked: filterField.activeFocus || chatView.inputFocused || apiKeyField.activeFocus || driveField.activeFocus
+        || pcDropdown.popupOpen
       onMoveRequested: function(dx, dy) {
         if (dx !== 0 && root.storeOpen) root.stepMedia(dx)
         else if (dx !== 0) root.switchTab(dx)
@@ -2386,6 +2428,90 @@ Panel {
           onChanged: function(v) { root.storeKind = v }
         }
 
+        // ---------- Remote Play: your other computers ----------
+        // Click one to stream its whole desktop.
+        ColumnLayout {
+          Layout.fillWidth: true
+          visible: root.tab === "library" && root.remoteDevices.length > 0
+          spacing: Style.space(4)
+
+          Text {
+            leftPadding: Style.space(2)
+            text: "REMOTE PLAY"
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            font.letterSpacing: 1
+          }
+
+          Flow {
+            Layout.fillWidth: true
+            spacing: Style.space(6)
+
+            Repeater {
+              model: root.remoteDevices
+
+              Rectangle {
+                id: pcTile
+                required property var modelData
+                width: pcRow.implicitWidth + Style.space(18)
+                height: Style.space(34)
+                radius: Style.space(6)
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, pcMouse.containsMouse ? 0.14 : 0.06)
+                border.width: 1
+                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, pcMouse.containsMouse ? 0.4 : 0.15)
+
+                Row {
+                  id: pcRow
+                  anchors.centerIn: parent
+                  spacing: Style.space(7)
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "󰍹"
+                    color: root.onlineColor
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: pcTile.modelData.name
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                  }
+
+                  Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    // Games in your library installed there (not tools or runtimes).
+                    readonly property int count: root.games.filter(function(g) {
+                      return (root.remoteApps[String(g.appid)] || []).indexOf(pcTile.modelData.id) >= 0 }).length
+                    visible: count > 0
+                    text: count + " games"
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                }
+
+                MouseArea {
+                  id: pcMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.streamDesktop(pcTile.modelData)
+                }
+
+                ToolTip.visible: pcMouse.containsMouse
+                ToolTip.delay: 400
+                ToolTip.text: "Remote Play " + pcTile.modelData.name + "'s desktop"
+              }
+            }
+          }
+        }
+
         // ---------- icon bars: groups' friends at a glance ----------
         Repeater {
           model: root.tab === "friends" ? root.iconBars : []
@@ -2585,6 +2711,38 @@ Panel {
           }
 
           Item { Layout.fillWidth: true }
+          }
+
+          // With games to stream from other computers: which computer to
+          // show, and whether to split the list by computer.
+          RowLayout {
+            Layout.fillWidth: true
+            visible: root.tab === "library" && root.hasStreams
+            spacing: Style.space(14)
+
+            Dropdown {
+              id: pcDropdown
+              Layout.preferredWidth: Style.space(190)
+              showLabel: false
+              fontFamily: root.fontFamily
+              foreground: root.foreground
+              value: root.libraryPc
+              options: [{ value: "", label: "All computers" }, { value: "local", label: "This computer" }]
+                .concat(root.remoteDevices.map(function(d) { return { value: d.id, label: d.name } }))
+              onChanged: function(v) { root.libraryPc = v; root.rowIndex = 0; list.positionViewAtBeginning() }
+            }
+
+            FilterTick {
+              label: "Group by computer"
+              implicitHeight: filterField.height
+              foreground: root.foreground
+              dim: root.dim
+              fontFamily: root.fontFamily
+              checked: root.groupByPc
+              onToggled: root.savePref("groupByPc", !root.groupByPc)
+            }
+
+            Item { Layout.fillWidth: true }
           }
         }
 
@@ -3069,7 +3227,7 @@ Panel {
             // Leave a gutter for the scrollbar so it doesn't sit on the row's buttons.
             width: list.width - (list.contentHeight > list.height ? listBar.width + Style.space(2) : 0)
             sourceComponent: root.tab === "friends" ? friendRow : root.tab === "groups" ? groupRow : root.tab === "recent" ? recentRow
-              : root.tab === "store" ? storeRow : libraryRow
+              : root.tab === "store" ? storeRow : modelData && modelData.isHeader ? libraryHeader : libraryRow
             property var entry: modelData
             property int rowIdx: index
           }
@@ -3882,6 +4040,34 @@ Panel {
     }
   }
 
+  // A computer's section in the library when it's grouped by computer.
+  Component {
+    id: libraryHeader
+    Item {
+      readonly property var entry: parent ? parent.entry : null
+      width: parent ? parent.width : 0
+      implicitHeight: Style.space(24) + (entry && entry.first ? 0 : Style.space(8))
+
+      Text {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: Style.space(24)
+        leftPadding: Style.space(6)
+        verticalAlignment: Text.AlignVCenter
+        textFormat: Text.PlainText
+        text: !parent.entry ? "" : (parent.entry.sectionId === "local" ? "󰌢  " : parent.entry.sectionId === "none" ? "" : "󰍹  ")
+          + parent.entry.name.toUpperCase() + "  " + parent.entry.count
+        color: Qt.darker(root.foreground, 1.4)
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1.2
+        elide: Text.ElideRight
+      }
+    }
+  }
+
   // Library: small icon, name, playtime; uninstalled games are dimmed.
   Component {
     id: libraryRow
@@ -3890,7 +4076,8 @@ Panel {
       readonly property var game: parent ? parent.entry : null
       readonly property var download: game ? root.downloadsById[game.appid] || null : null
       // Installed on another computer: stream it from there.
-      readonly property var streamFrom: root.streamable(game) ? root.streamDevices(game) : []
+      readonly property var streamFrom: game && game.streamDevice ? [game.streamDevice]
+        : root.streamable(game) ? root.streamDevices(game) : []
       readonly property bool showActions: hasCursor && !!game && !game.installed && root.controllable
         && (!download || ["downloading", "paused", "queued", "preparing"].indexOf(download.status) >= 0)
       rowIdx: parent ? parent.rowIdx : 0
@@ -3948,7 +4135,7 @@ Panel {
           visible: text !== ""
           text: l.game && root.uninstalling[l.game.appid] ? "Uninstalling…"
             : l.download ? (l.download.status === "paused" ? "Paused" : l.download.total ? Math.floor(l.download.progress * 100) + "%" : "")
-            : l.streamFrom.length && !l.showActions ? "Stream · " + l.streamFrom[0].name
+            : l.streamFrom.length && !l.showActions ? (l.game.streamDevice ? "Stream" : "Stream · " + l.streamFrom[0].name)
             : l.game ? root.playtimeLabel(l.game.playtime) : ""
           color: root.dim
           font.family: root.fontFamily

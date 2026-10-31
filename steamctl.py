@@ -18,6 +18,7 @@ client's own UI uses. This is how Decky Loader talks to Steam too.
   steamctl.py remote                -> other computers online and the games they can stream
   steamctl.py stream <appid> <client id>
                                     -> stream a game from one of them
+  steamctl.py desktop <client id>   -> Remote Play another computer's desktop
   steamctl.py chat <chat> [read]    -> recent messages in a chat ("read" marks them read);
                                        <chat> is a friend's account id or groupid:roomid
   steamctl.py react <accountid> <ts> <ordinal> <type> <reaction> add|remove
@@ -590,9 +591,16 @@ REMOTE_JS = """
 
 # Stream a game from another computer: what Steam's Stream button does.
 STREAM_JS = """
-(async () => {
-  await SteamClient.Apps.SetStreamingClientForApp(%(appid)d, "%(client)s")
-  SteamClient.Apps.RunGame("%(appid)d", "", -1, 100)
+(() => {
+  SteamClient.Apps.StreamGame(%(appid)d, "%(client)s", -1)
+  return "streaming"
+})()
+"""
+
+# Remote Play the other computer's whole desktop, as Steam's device list does.
+DESKTOP_JS = """
+(() => {
+  SteamClient.RemotePlay.StartDesktopStream("%(client)s")
   return "streaming"
 })()
 """
@@ -757,6 +765,10 @@ def main(argv):
         if not re.fullmatch(r"\d{1,20}", argv[3]):
             raise ValueError("not a computer: %s" % argv[3])
         return evaluate(STREAM_JS % {"appid": int(argv[2]), "client": argv[3]})
+    if cmd == "desktop":
+        if not re.fullmatch(r"\d{1,20}", argv[2]):
+            raise ValueError("not a computer: %s" % argv[2])
+        return evaluate(DESKTOP_JS % {"client": argv[2]})
     if cmd == "wizard-state":
         return evaluate("SteamClient.Installs.GetInstallManagerInfo().then(i => i.eInstallState)")
     if cmd == "overview":

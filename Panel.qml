@@ -4127,6 +4127,31 @@ Panel {
     }
   }
 
+  // A row of icons (a friend group, a group chat's members, Remote Play)
+  // that scrolls sideways when it's longer than the space: the wheel or a
+  // touchpad scrolls it (only then, so otherwise the list scrolls), and it
+  // drags or flicks by mouse or touch.
+  component IconStrip: ListView {
+    id: strip
+    readonly property bool overflows: contentWidth > width + 1
+    orientation: ListView.Horizontal
+    spacing: Style.space(6)
+    clip: true
+    boundsBehavior: Flickable.StopAtBounds
+    flickableDirection: Flickable.HorizontalFlick
+    interactive: overflows
+    ScrollBar.horizontal: ScrollBar { policy: strip.overflows ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
+
+    WheelHandler {
+      enabled: strip.overflows
+      onWheel: function(event) {
+        var px = event.pixelDelta.x !== 0 ? event.pixelDelta.x : event.pixelDelta.y
+        var d = px !== 0 ? px : (event.angleDelta.x !== 0 ? event.angleDelta.x : event.angleDelta.y) / 3
+        strip.contentX = Math.max(strip.originX, Math.min(strip.originX + strip.contentWidth - strip.width, strip.contentX - d))
+      }
+    }
+  }
+
   // A person as an avatar: presence dot, unread dot, the game they're
   // playing in the corner, name and status on hover. Click to chat (or see
   // the profile of someone who isn't a friend).
@@ -4218,14 +4243,10 @@ Panel {
       width: parent ? parent.width : 0
       implicitHeight: Style.space(42)
 
-      ListView {
+      IconStrip {
         anchors.fill: parent
         anchors.leftMargin: Style.space(6)
         anchors.topMargin: Style.space(2)
-        orientation: ListView.Horizontal
-        spacing: Style.space(6)
-        clip: true
-        boundsBehavior: Flickable.StopAtBounds
         model: fib.entry ? fib.entry.members : []
 
           delegate: AvatarTile {
@@ -4303,17 +4324,14 @@ Panel {
       width: parent ? parent.width : 0
       implicitHeight: Style.space(42)
 
-      Row {
+      IconStrip {
         anchors.fill: parent
         anchors.leftMargin: Style.space(6)
         anchors.topMargin: Style.space(2)
-        spacing: Style.space(6)
-
-        Repeater {
-          model: db.entry ? db.entry.devices : []
+        model: db.entry ? db.entry.devices : []
 
           // A computer: click to Remote Play its desktop.
-          Item {
+          delegate: Item {
             id: tile
             required property var modelData
             width: Style.space(34)
@@ -4361,7 +4379,6 @@ Panel {
             ToolTip.delay: 300
             ToolTip.text: tile.modelData.device.name + " · Remote Play its desktop · " + tile.modelData.count + " games to stream"
           }
-        }
       }
     }
   }
@@ -5428,13 +5445,9 @@ Panel {
           font.letterSpacing: 1.2
         }
 
-        ListView {
+        IconStrip {
           Layout.fillWidth: true
-          Layout.preferredHeight: Style.space(38)
-          orientation: ListView.Horizontal
-          spacing: Style.space(6)
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
+          Layout.preferredHeight: Style.space(42)
           model: cv.members
 
           delegate: AvatarTile {

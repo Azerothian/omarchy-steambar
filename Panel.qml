@@ -43,7 +43,7 @@ Panel {
     Quickshell.execDetached(["omarchy-shell", "-q", "shell", "setBarWidget", "blip.steam", name, json, "{}"])
   }
 
-  readonly property var allTabs: ["store", "recent", "library", "friends"]
+  readonly property var allTabs: ["store", "recent", "library", "friends", "groups"]
   // Your order from dragging the tabs; the first opens with the popup.
   readonly property var tabOrder: {
     var saved = pref("tabOrder", null), out = []
@@ -271,7 +271,7 @@ Panel {
   }
 
   readonly property var rows: tab === "recent" ? recentGames : tab === "library" ? libraryGames
-    : tab === "store" ? storeRows : tab === "friends" ? friendRows : []
+    : tab === "store" ? storeRows : tab === "friends" ? friendRows : tab === "groups" ? groupRows : []
 
   // Active/queued/paused downloads from `steam.py downloads`, each with a
   // smoothed `speed` (bytes/s) worked out here from successive samples.
@@ -365,7 +365,8 @@ Panel {
     property real dragOffset: 0
     property point pressAt
     readonly property bool selected: root.tab === tabName
-    readonly property int badge: tabName === "friends" ? (root.unreadTotal || root.friendsOnline) : 0
+    readonly property int badge: tabName === "friends" ? (root.unreadTotal || root.friendsOnline)
+      : tabName === "groups" ? root.groupUnread : 0
     radius: Style.space(6)
     color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
       dragging ? 0.18 : selected ? 0.12 : rtMouse.containsMouse ? 0.06 : 0)
@@ -403,13 +404,13 @@ Panel {
       width: Math.max(height, badgeText.implicitWidth + Style.space(8))
       height: badgeText.implicitHeight + Style.space(2)
       radius: height / 2
-      color: root.unreadTotal ? root.inGameColor : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
+      color: root.unreadTotal || rt.tabName === "groups" ? root.inGameColor : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
 
       Text {
         id: badgeText
         anchors.centerIn: parent
         text: rt.badge
-        color: root.unreadTotal ? "black" : root.foreground
+        color: root.unreadTotal || rt.tabName === "groups" ? "black" : root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption * 0.9
         font.bold: true
@@ -654,7 +655,7 @@ Panel {
     }
   }
 
-  onTabChanged: { rowIndex = 0; filterText = ""; filterField.text = ""; armedUninstall = 0; list.positionViewAtBeginning(); if (tab === "store") refreshStoreLists() }
+  onTabChanged: { if (tab === "groups") refreshGroups(); rowIndex = 0; filterText = ""; filterField.text = ""; armedUninstall = 0; list.positionViewAtBeginning(); if (tab === "store") refreshStoreLists() }
   onStoreKindChanged: { rowIndex = 0; list.positionViewAtBeginning() }
   onFilterTextChanged: rowIndex = 0
   onMostPlayedChanged: { rowIndex = 0; list.positionViewAtBeginning() }
@@ -686,6 +687,7 @@ Panel {
         root.friendsError = ""
         root.syncChatFriend()
       })
+      refreshGroups()
       return
     }
     if (friendsProc.running) return
@@ -734,11 +736,29 @@ Panel {
   // reads and sends through the Steam client (steamctl.py chat/send). A
   // chat can also pop out into its own window, which outlives the popup.
   property var chatFriend: null
-  readonly property bool chatOpen: !!chatFriend
+  // A group chat open in the pane instead (one of groupChats).
+  property var chatGroup: null
+  readonly property bool chatOpen: !!chatFriend || !!chatGroup
+  // Your group chats from the client (steamctl.py groups), newest first.
+  property var groupChats: []
+  property bool groupsBusy: false
+  readonly property int groupUnread: {
+    var n = 0
+    for (var i = 0; i < groupChats.length; i++) n += groupChats[i].unread || 0
+    return n
+  }
+  readonly property var groupRows: {
+    var q = filterText.trim().toLowerCase()
+    return q === "" ? groupChats : groupChats.filter(function(g) {
+      return (g.name + "\n" + g.tagline).toLowerCase().indexOf(q) >= 0
+    })
+  }
   // Account ids with a chat window open, and the friend each was opened
   // for (used while the live list doesn't have them).
   property var popouts: []
   property var popoutFriends: ({})
+  // Popped-out group chats are "g:<group id>" in popouts.
+  property var popoutGroups: ({})
   readonly property real railWidth: Style.space(64)
   readonly property real listWidth: railTop ? Style.space(410) : railWidth + Style.space(340)
   readonly property var tabInfo: ({
@@ -746,6 +766,7 @@ Panel {
     recent: { icon: "󰋚", label: "Recent" },
     library: { icon: "󰓓", label: "Library" },
     friends: { icon: "󰡉", label: "Friends" },
+    groups: { icon: "󰭹", label: "Groups" },
     settings: { icon: "󰒓", label: "Settings" }
   })
   readonly property real chatWidth: Style.space(330)
@@ -759,13 +780,52 @@ Panel {
     if (!friend) return
     closeStore()
     if (!controllable) { launch("steam://friends/message/" + friend.steamid); return }
+    chatGroup = null
     if (!chatFriend || chatFriend.accountid !== friend.accountid) chatFriend = friend
     Qt.callLater(function() { chatView.focusInput() })
   }
 
+  function openGroupChat(group) {
+    if (!group) return
+    closeStore()
+    chatFriend = null
+    if (!chatGroup || chatGroup.id !== group.id) chatGroup = group
+    Qt.callLater(function() { chatView.focusInput() })
+  }
+
+  function chatWithGroup(group) {
+    if (chatInWindow) popOutGroup(group)
+    else openGroupChat(group)
+  }
+
   function closeChat() {
     chatFriend = null
+    chatGroup = null
     keyCatcher.forceActiveFocus()
+  }
+
+  function groupLine(g) {
+    if (!g) return ""
+    var parts = []
+    if ((g.rooms || []).length > 1) parts.push(g.rooms.length + " rooms")
+    parts.push(g.tagline || (g.members + (g.members === 1 ? " member" : " members")))
+    return parts.join(" · ")
+  }
+
+  function groupById(id) {
+    for (var i = 0; i < groupChats.length; i++) if (groupChats[i].id === id) return groupChats[i]
+    return popoutGroups[id] || null
+  }
+
+  function refreshGroups() {
+    if (!controllable || groupsBusy) return
+    groupsBusy = true
+    runCtl(["groups"], function(ok, value) {
+      root.groupsBusy = false
+      if (!ok || !Array.isArray(value)) return
+      root.groupChats = value
+      if (root.chatGroup) root.chatGroup = root.groupById(root.chatGroup.id) || root.chatGroup
+    })
   }
 
   function friendById(accountid) {
@@ -860,9 +920,24 @@ Panel {
     return "Steam image · " + (parts.length ? parts[parts.length - 1].slice(0, 12) : "")
   }
 
-  function popoutTitle(accountid) {
-    var f = friendById(accountid)
-    return "Steam chat · " + (f ? f.name : accountid)
+  function popoutTitle(key) {
+    if (String(key).indexOf("g:") === 0) {
+      var g = groupById(key.slice(2))
+      return "Steam group chat · " + (g ? g.name : key.slice(2))
+    }
+    var f = friendById(key)
+    return "Steam chat · " + (f ? f.name : key)
+  }
+
+  function popOutGroup(group) {
+    if (!group) return
+    var known = Object.assign({}, popoutGroups)
+    known[group.id] = group
+    popoutGroups = known
+    if (chatOpen) closeChat()
+    var key = "g:" + group.id
+    if (popouts.indexOf(key) < 0) popouts = popouts.concat([key])
+    else focusPopout(key)
   }
 
   function focusPopout(accountid) { focusWindow(popoutTitle(accountid)) }
@@ -905,6 +980,7 @@ Panel {
   function openStore(game) {
     if (!game) return
     chatFriend = null
+    chatGroup = null
     if (storeGame && storeGame.appid === game.appid) return
     storeGame = game
     storeError = ""
@@ -1005,6 +1081,7 @@ Panel {
     if (!item) return
     if (root.tab === "friends" && item.isHeader) { if (!item.icons) toggleGroup(item.sectionId) }
     else if (root.tab === "friends") chatWith(item)
+    else if (root.tab === "groups") chatWithGroup(item)
     else if (root.tab === "store" && !item.owned) openStore(item)
     else if (item.installed) launch("steam://rungameid/" + item.appid)
     else if (downloadsById[item.appid]) toggleDownload(downloadsById[item.appid])
@@ -1240,7 +1317,7 @@ Panel {
 
   function moveRow(delta) {
     if (!cursorActive) { cursorActive = true; return }
-    if ((tab === "library" || tab === "friends") && delta < 0 && rowIndex === 0) { focusFilter(); return }
+    if ((tab === "library" || tab === "friends" || tab === "groups") && delta < 0 && rowIndex === 0) { focusFilter(); return }
     var n = rows.length
     if (!n) return
     rowIndex = Math.max(0, Math.min(n - 1, rowIndex + delta))
@@ -1249,7 +1326,7 @@ Panel {
   }
 
   function focusFilter() {
-    if (tab !== "library" && tab !== "friends") tab = "library"
+    if (tab !== "library" && tab !== "friends" && tab !== "groups") tab = "library"
     filterField.forceActiveFocus()
     cursorActive = false
   }
@@ -1288,6 +1365,14 @@ Panel {
     }
     function video(url: string): void { if (/^https:\/\//.test(url)) root.mainInstance().openVideo(url, 0) }
     function image(url: string): void { if (/^https:\/\//.test(url)) root.mainInstance().openImage(url) }
+    function groupchat(id: string): void {
+      var t = root.mainInstance(), g = t.groupById(id)
+      if (!g) return
+      t.keepTab = true
+      t.tab = "groups"
+      t.open()
+      t.openGroupChat(g)
+    }
     function popout(account: string): void {
       var t = root.mainInstance()
       var f = t.friendById(account)
@@ -1450,7 +1535,7 @@ Panel {
   }
 
   onOpenedChanged: {
-    if (!opened) { armedUninstall = 0; chatFriend = null; closeStore() }
+    if (!opened) { armedUninstall = 0; chatFriend = null; chatGroup = null; closeStore() }
     if (!opened && Date.now() < reopenUntil) { reopenTimer.restart(); return }
     if (opened && reopening) { reopening = false; return }
     if (opened) {
@@ -1486,7 +1571,9 @@ Panel {
     FloatingWindow {
       id: chatWindow
       required property string modelData
-      readonly property var friend: root.friendById(modelData)
+      readonly property bool isGroup: modelData.indexOf("g:") === 0
+      readonly property var friend: isGroup ? null : root.friendById(modelData)
+      readonly property var group: isGroup ? root.groupById(modelData.slice(2)) : null
       title: root.popoutTitle(modelData)
       implicitWidth: 420
       implicitHeight: 580
@@ -1506,6 +1593,7 @@ Panel {
         anchors.fill: parent
         anchors.margins: Style.space(14)
         friend: chatWindow.friend
+        group: chatWindow.group
         active: true
         popout: true
         onCloseRequested: root.closePopout(chatWindow.modelData)
@@ -2045,8 +2133,8 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "/") root.focusFilter()
-        else if (/^[1-4]$/.test(t)) root.tab = root.tabOrder[Number(t) - 1]
-        else if (t === "5" || t === ",") root.tab = "settings"
+        else if (/^[1-9]$/.test(t) && Number(t) <= root.tabOrder.length) root.tab = root.tabOrder[Number(t) - 1]
+        else if (Number(t) === root.tabOrder.length + 1 || t === ",") root.tab = "settings"
         else if (t === "i" && root.tab !== "friends" && root.cursorActive) {
           if (root.storeOpen) root.closeStore(); else root.openStore(root.rows[root.rowIndex])
         }
@@ -2353,13 +2441,14 @@ Panel {
 
         ColumnLayout {
           Layout.fillWidth: true
-          visible: root.tab === "library" || root.tab === "friends"
+          visible: root.tab === "library" || root.tab === "friends" || (root.tab === "groups" && root.groupChats.length > 0)
           spacing: Style.space(6)
 
           TextField {
             id: filterField
             Layout.fillWidth: true
             placeholderText: root.tab === "friends" ? "Search " + root.friends.length + " friends  (/)"
+              : root.tab === "groups" ? "Search " + root.groupChats.length + " group chats  (/)"
               : "Search " + root.games.length + " games  (/)"
             foreground: root.foreground
             font.family: root.fontFamily
@@ -2442,7 +2531,7 @@ Panel {
         // ---------- downloads ----------
         ColumnLayout {
           Layout.fillWidth: true
-          visible: root.tab !== "friends" && root.tab !== "settings" && root.downloads.length > 0
+          visible: root.tab !== "friends" && root.tab !== "groups" && root.tab !== "settings" && root.downloads.length > 0
           spacing: Style.space(6)
 
           // Header doubles as the toggle; folded, it keeps a one-line summary.
@@ -2911,7 +3000,7 @@ Panel {
             required property int index
             // Leave a gutter for the scrollbar so it doesn't sit on the row's buttons.
             width: list.width - (list.contentHeight > list.height ? listBar.width + Style.space(2) : 0)
-            sourceComponent: root.tab === "friends" ? friendRow : root.tab === "recent" ? recentRow
+            sourceComponent: root.tab === "friends" ? friendRow : root.tab === "groups" ? groupRow : root.tab === "recent" ? recentRow
               : root.tab === "store" ? storeRow : libraryRow
             property var entry: modelData
             property int rowIdx: index
@@ -2924,7 +3013,10 @@ Panel {
             wrapMode: Text.WordWrap
             visible: root.rows.length === 0
             textFormat: Text.PlainText
-            text: root.tab === "friends"
+            text: root.tab === "groups"
+              ? (!root.controllable ? "Group chats need Steam's debugging port (see the ⚠ above)."
+                : root.filterText !== "" ? "No group chats match “" + root.filterText + "”" : "No group chats")
+              : root.tab === "friends"
               ? (!root.friendsLoaded ? "Checking who's online…"
                 : root.filterText !== "" ? "No friends match “" + root.filterText + "”" : "No friends found")
               : root.tab === "store" ? (root.storeListsLoaded ? "Couldn't load the store" : "Loading the Steam store…")
@@ -2963,9 +3055,10 @@ Panel {
           id: chatView
           anchors.fill: parent
           friend: root.chatFriend
+          group: root.chatGroup
           active: root.opened && root.chatOpen
           onCloseRequested: root.closeChat()
-          onPopOutRequested: root.popOutChat(root.chatFriend)
+          onPopOutRequested: root.chatGroup ? root.popOutGroup(root.chatGroup) : root.popOutChat(root.chatFriend)
           onTabPressed: keyCatcher.forceActiveFocus()
         }
       }
@@ -3915,6 +4008,101 @@ Panel {
     }
   }
 
+  // Group chats: picture, name, rooms or tagline, and unread messages.
+  Component {
+    id: groupRow
+    RowSurface {
+      id: gr
+      readonly property var group: parent ? parent.entry : null
+      rowIdx: parent ? parent.rowIdx : 0
+      current: !!group && !!root.chatGroup && root.chatGroup.id === group.id
+      implicitHeight: Style.space(44)
+
+      RowLayout {
+        anchors.fill: parent
+        anchors.leftMargin: Style.space(6)
+        anchors.rightMargin: Style.space(8)
+        spacing: Style.space(10)
+
+        ClippingRectangle {
+          Layout.preferredWidth: Style.space(32)
+          Layout.preferredHeight: Style.space(32)
+          radius: Style.space(4)
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+
+          Image {
+            anchors.fill: parent
+            source: gr.group ? gr.group.avatar : ""
+            sourceSize.width: 64
+            fillMode: Image.PreserveAspectCrop
+            asynchronous: true
+          }
+
+          Text {
+            anchors.centerIn: parent
+            visible: !!gr.group && !gr.group.avatar
+            text: root.tabInfo.groups.icon
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+        }
+
+        ColumnLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(1)
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: gr.group ? gr.group.name : ""
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.bold: !!gr.group && gr.group.unread > 0
+            elide: Text.ElideRight
+          }
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: root.groupLine(gr.group)
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+        }
+
+        Rectangle {
+          visible: !!gr.group && gr.group.unread > 0
+          Layout.preferredHeight: Style.space(16)
+          Layout.preferredWidth: Math.max(height, groupUnreadLabel.implicitWidth + Style.space(10))
+          radius: height / 2
+          color: gr.group && gr.group.mention ? root.warnColor : root.onlineColor
+
+          Text {
+            id: groupUnreadLabel
+            anchors.centerIn: parent
+            text: gr.group ? (gr.group.mention ? "@ " : "") + gr.group.unread : ""
+            color: "black"
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+        }
+
+        Text {
+          visible: gr.hasCursor && !(gr.group && gr.group.unread > 0)
+          text: "󰭹"
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+        }
+      }
+    }
+  }
+
   // Friends: avatar with a presence dot, name, and what they're doing,
   // under their group's header when they start one.
   Component {
@@ -4349,7 +4537,10 @@ Panel {
   // keeps its own messages and polls Steam while active.
   component ChatView: Item {
     id: cv
+    // A friend's chat, or a group chat (one of its rooms, the default first).
     property var friend: null
+    property var group: null
+    property string roomId: ""
     property bool active: false
     property bool popout: false
     signal closeRequested()
@@ -4357,7 +4548,18 @@ Panel {
     signal tabPressed()
 
     readonly property string accountid: friend ? String(friend.accountid) : ""
+    readonly property string groupId: group ? group.id : ""
+    readonly property string currentRoom: group ? (roomId || group.defaultRoom) : ""
+    // What steamctl.py calls the chat: an account id, or groupid:roomid.
+    readonly property string target: group ? groupId + ":" + currentRoom : accountid
+    readonly property var rooms: group ? group.rooms || [] : []
+    readonly property string roomName: {
+      for (var i = 0; i < rooms.length; i++) if (rooms[i].id === currentRoom) return rooms[i].name
+      return ""
+    }
+    readonly property string title: group ? group.name : friend ? friend.name : ""
     readonly property bool inputFocused: chatInput.activeFocus
+    onGroupIdChanged: roomId = ""
     property var messages: []
     property string signature: ""
     property bool typing: false
@@ -4367,21 +4569,21 @@ Panel {
     function focusInput() { chatInput.forceActiveFocus() }
 
     function refresh() {
-      if (!accountid || proc.running) return
-      proc.account = accountid
-      proc.command = ["python3", root.ctlScript, "chat", accountid, "read"]
+      if (!target || proc.running) return
+      proc.account = target
+      proc.command = ["python3", root.ctlScript, "chat", target, "read"]
       proc.running = true
     }
 
     function send() {
       var text = String(chatInput.text || "").trim()
-      if (!text || !accountid) return
+      if (!text || !target) return
       chatInput.text = ""
       error = ""
       // Shown straight away (dimmed) until Steam's copy comes back.
       messages = messages.concat([{ mine: true, text: text, ts: Date.now() / 1000,
         key: "local:" + Date.now(), pending: true, failed: false, showDay: false }])
-      root.runCtl(["send", accountid], text, function(ok, value, err) {
+      root.runCtl(["send", target], text, function(ok, value, err) {
         if (!ok) cv.error = "Couldn't send: " + err
         cv.refresh()
       })
@@ -4389,16 +4591,16 @@ Panel {
 
     // Clicking a reaction under a message adds yours, or takes it back.
     function toggleReaction(message, reaction) {
-      if (!accountid || !message || !reaction) return
+      if (!target || !message || !reaction) return
       error = ""
-      root.runCtl(["react", accountid, String(message.ts), String(message.ordinal), String(reaction.type),
+      root.runCtl(["react", target, String(message.ts), String(message.ordinal), String(reaction.type),
                    reaction.name, reaction.mine ? "remove" : "add"], function(ok, value, err) {
         if (!ok) cv.error = "Couldn't react: " + err
         cv.refresh()
       })
     }
 
-    onAccountidChanged: {
+    onTargetChanged: {
       messages = []
       signature = ""
       loaded = false
@@ -4409,7 +4611,7 @@ Panel {
 
     Timer {
       interval: 1500
-      running: cv.active && cv.accountid !== ""
+      running: cv.active && cv.target !== ""
       repeat: true
       onTriggered: cv.refresh()
     }
@@ -4420,7 +4622,7 @@ Panel {
       stdout: StdioCollector {
         waitForEnd: true
         onStreamFinished: {
-          if (cv.accountid !== proc.account) return
+          if (cv.target !== proc.account) return
           var r = {}
           try { r = JSON.parse(String(text || "{}")) } catch (e) { r = { ok: false, error: "no reply" } }
           if (!r.ok) { cv.error = r.error || "Couldn't load the chat"; return }
@@ -4431,9 +4633,12 @@ Panel {
           var sig = JSON.stringify(list)
           if (sig === cv.signature) return
           cv.signature = sig
-          // A day label above the first message of each day.
-          for (var i = 0; i < list.length; i++)
+          // A day label above the first message of each day; in group chats
+          // the sender's name above each run of their messages.
+          for (var i = 0; i < list.length; i++) {
             list[i].showDay = i === 0 || new Date(list[i].ts * 1000).toDateString() !== new Date(list[i - 1].ts * 1000).toDateString()
+            list[i].showSender = !list[i].mine && (list[i].showDay || list[i - 1].accountid !== list[i].accountid)
+          }
           cv.messages = list
         }
       }
@@ -4455,10 +4660,19 @@ Panel {
 
           Image {
             anchors.fill: parent
-            source: cv.friend ? cv.friend.avatar : ""
+            source: cv.group ? cv.group.avatar : cv.friend ? cv.friend.avatar : ""
             sourceSize.width: 64
             fillMode: Image.PreserveAspectCrop
             asynchronous: true
+          }
+
+          Text {
+            anchors.centerIn: parent
+            visible: !!cv.group && !cv.group.avatar
+            text: root.tabInfo.groups.icon
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
           }
         }
 
@@ -4469,7 +4683,7 @@ Panel {
           Text {
             Layout.fillWidth: true
             textFormat: Text.PlainText
-            text: cv.friend ? cv.friend.name : ""
+            text: cv.title
             color: root.foreground
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -4480,8 +4694,8 @@ Panel {
           Text {
             Layout.fillWidth: true
             textFormat: Text.PlainText
-            text: cv.typing ? "typing…" : cv.friend ? root.friendLine(cv.friend) : ""
-            color: cv.friend && cv.friend.state !== "offline" ? root.stateColor(cv.friend.state) : root.dim
+            text: cv.typing ? "typing…" : cv.group ? root.groupLine(cv.group) : cv.friend ? root.friendLine(cv.friend) : ""
+            color: !cv.group && cv.friend && cv.friend.state !== "offline" ? root.stateColor(cv.friend.state) : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight
@@ -4494,7 +4708,8 @@ Panel {
           foreground: root.dim
           fontFamily: root.fontFamily
           fontSize: Style.font.bodySmall
-          onClicked: if (cv.friend) root.launch("steam://friends/message/" + cv.friend.steamid)
+          onClicked: if (cv.group) root.launch("steam://open/friends")
+            else if (cv.friend) root.launch("steam://friends/message/" + cv.friend.steamid)
         }
 
         PanelActionButton {
@@ -4517,6 +4732,28 @@ Panel {
         }
       }
 
+      // A group's rooms, when it has more than one.
+      Flow {
+        Layout.fillWidth: true
+        visible: cv.rooms.length > 1
+        spacing: Style.space(6)
+
+        Repeater {
+          model: cv.rooms
+
+          Button {
+            required property var modelData
+            text: "# " + modelData.name + (modelData.unread ? "  " + modelData.unread : "")
+            bordered: true
+            selected: modelData.id === cv.currentRoom
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.caption
+            onClicked: cv.roomId = modelData.id
+          }
+        }
+      }
+
       PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
 
       // Newest message at the bottom, like any chat.
@@ -4536,6 +4773,7 @@ Panel {
           width: chatList.width
           message: modelData
           popout: cv.popout
+          showSender: !!cv.group && !!modelData.showSender
           onReactionClicked: function(reaction) { cv.toggleReaction(modelData, reaction) }
         }
 
@@ -4546,7 +4784,7 @@ Panel {
           wrapMode: Text.WordWrap
           visible: cv.messages.length === 0
           textFormat: Text.PlainText
-          text: cv.loaded ? "No recent messages with " + (cv.friend ? cv.friend.name : "") + ". Say hi!" : "Loading chat…"
+          text: cv.loaded ? "No recent messages in " + cv.title + ". Say hi!" : "Loading chat…"
           color: root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
@@ -4571,7 +4809,7 @@ Panel {
         TextField {
           id: chatInput
           Layout.fillWidth: true
-          placeholderText: cv.friend ? "Message " + cv.friend.name : ""
+          placeholderText: cv.title ? "Message " + cv.title : ""
           foreground: root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.bodySmall
@@ -4607,6 +4845,8 @@ Panel {
     id: cb
     property var message: null
     property bool popout: false
+    // Group chats: the sender's name above the first of their messages.
+    property bool showSender: false
     readonly property bool mine: !!message && message.mine
     readonly property var cards: message && message.cards ? message.cards : []
     readonly property bool hasText: !!message && (message.html !== undefined ? message.html !== "" : message.text !== "")
@@ -4632,9 +4872,44 @@ Panel {
       font.pixelSize: Style.font.caption
     }
 
+    Row {
+      id: senderRow
+      visible: cb.showSender && !cb.mine
+      y: timeLabel.visible ? timeLabel.implicitHeight + Style.space(4) : 0
+      x: Style.space(2)
+      spacing: Style.space(5)
+
+      ClippingRectangle {
+        width: Style.space(16)
+        height: width
+        radius: Style.space(3)
+        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+        anchors.verticalCenter: parent.verticalCenter
+
+        Image {
+          anchors.fill: parent
+          source: cb.message && cb.message.senderAvatar ? cb.message.senderAvatar : ""
+          sourceSize.width: 32
+          fillMode: Image.PreserveAspectCrop
+          asynchronous: true
+        }
+      }
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        textFormat: Text.PlainText
+        text: cb.message && cb.message.senderName ? cb.message.senderName : ""
+        color: root.onlineColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+      }
+    }
+
     Rectangle {
       id: bubble
-      y: timeLabel.visible ? timeLabel.implicitHeight + Style.space(4) : 0
+      y: (timeLabel.visible ? timeLabel.implicitHeight + Style.space(4) : 0)
+        + (senderRow.visible ? senderRow.implicitHeight + Style.space(3) : 0)
       x: cb.mine ? cb.width - width : 0
       // Cards get a fixed width; text alone hugs its words.
       width: cb.cards.length ? Math.min(cb.width * 0.82, Style.space(300))

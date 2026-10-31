@@ -15,6 +15,9 @@ A bar widget for [Omarchy](https://omarchy.org)'s shell that puts Steam in a pop
 - **Library**: everything you own, searchable (`/`). It opens on **Installed** games; untick it
   to see everything, tick **Uninstalled** for the games you haven't installed, or **Most played**
   to sort by hours. Uninstalled games install to the drive of your choice.
+- **Groups**: your Steam group chats (named groups, Steam group chats and chats with several
+  friends), newest first, with unread counts. Open one to read and write in it, switch between its
+  rooms, or pop it out into its own window. Needs Steam's debugging port.
 - **Downloads**: live progress, speed and time left, with pause/resume. Collapse the section
   with its header or `d`.
 - **Friends**: who's online and what they're playing, with chat in the popup.
@@ -73,8 +76,8 @@ entry in `~/.config/omarchy/shell.json`:
 
 | Key | Action |
 | --- | --- |
-| `1`–`4` | The tabs, in the menu's order |
-| `5` | Settings |
+| `1`–`5` | The tabs, in the menu's order |
+| `6` or `,` | Settings |
 | `←` `→` | Previous/next list or tab (flip media when a store page is open) |
 | `↑` `↓`, `Enter` | Move, then play / install / open |
 | `i` | Store page for the selected game |
@@ -92,6 +95,7 @@ omarchy-shell blip.steam toggle
 omarchy-shell blip.steam tab store        # store | recent | library | friends
 omarchy-shell blip.steam store 1091500    # open a game's store page by app id
 omarchy-shell blip.steam popout 12345678  # chat with a friend (by account id) in its own window
+omarchy-shell blip.steam groupchat 50739  # open a group chat (by group id)
 ```
 
 ## What it talks to

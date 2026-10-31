@@ -14,8 +14,9 @@ client's own UI uses. This is how Decky Loader talks to Steam too.
                                     -> install without Steam's window
   steamctl.py uninstall <appid>     -> uninstall a game (no confirmation dialog)
   steamctl.py friends               -> friend list with live presence and unread counts
-  steamctl.py chat <accountid> [read]
-                                    -> recent messages with a friend ("read" marks them read)
+  steamctl.py groups                -> your group chats and their rooms
+  steamctl.py chat <chat> [read]    -> recent messages in a chat ("read" marks them read);
+                                       <chat> is a friend's account id or groupid:roomid
   steamctl.py react <accountid> <ts> <ordinal> <type> <reaction> add|remove
                                     -> react to a message (or take it back)
   steamctl.py send <accountid>      -> send the chat message read from stdin
@@ -350,7 +351,8 @@ FRIENDS_JS = """
 # Messages are BBCode; turn the common tags into plain text for the widget.
 CHAT_JS = """
 (async () => {
-  const chat = g_FriendsUIApp.ChatStore.GetFriendChat(%(account)d, true)
+  const chat = %(target)s
+  if (!chat) throw new Error("That chat isn't available")
   if (!chat.m_bChatLogsLoaded) await chat.LoadChatLogs()
   if (%(read)s) chat.OnActivate()
   const me = g_FriendsUIApp.FriendStore.self.accountid
@@ -365,10 +367,29 @@ CHAT_JS = """
     .replace(/\\u0001/g, "[")
   const html = %(html)s
   const embeds = %(embeds)s
+  // Who wrote each message: group chats show the sender's name.
+  const senders = {}
+  const sender = id => {
+    if (!senders[id]) {
+      let name = String(id), avatar = ""
+      try {
+        const p = g_FriendsUIApp.FriendStore.GetPlayer(id)
+        name = p.display_name || (p.persona && p.persona.m_strPlayerName) || name
+        const hash = p.persona && p.persona.m_strAvatarHash
+        if (hash && !/^0+$/.test(hash)) avatar = "https://avatars.fastly.steamstatic.com/" + hash + "_medium.jpg"
+      } catch (e) {}
+      senders[id] = { name: name, avatar: avatar }
+    }
+    return senders[id]
+  }
   const msgs = chat.chat_messages.slice(-80).map(m => {
     const e = embeds(m.strMessage !== undefined ? m.strMessage : m.strMessageInternal)
+    const from = sender(m.unAccountID)
     return {
     mine: m.unAccountID === me,
+    accountid: String(m.unAccountID),
+    senderName: from.name,
+    senderAvatar: from.avatar,
     text: plain(e.rest).trim(),
     html: html(e.rest.trim()),
     cards: e.cards,
@@ -544,10 +565,46 @@ EMBEDS_JS = r"""(s => {
   return { rest: tagged, cards: cards }
 })"""
 
+# Your group chats (named groups, Steam group chats and ad-hoc chats with
+# several friends), most recently active first, with their text rooms.
+GROUPS_JS = """
+(() => {
+  const avatar = g => {
+    const url = g.hasAvatarSHA ? String(g.avatar_url_medium || "") : ""
+    return /\\/_(medium|64)\\.jpg$/.test(url) ? "" : url
+  }
+  return Array.from(g_FriendsUIApp.ChatStore.currentChatRoomGroups || []).map(g => {
+    const rooms = Array.from(g.textRoomList || []).map(r => ({
+      id: String(r.GetRoomID()), name: r.name || "", unread: r.unread_message_count || 0,
+      mention: !!r.has_unread_mention, last: r.time_last_message || 0,
+    }))
+    const unread = rooms.reduce((n, r) => n + r.unread, 0)
+    return {
+      id: String(g.GetGroupID()),
+      name: g.name || "",
+      tagline: g.tagline || "",
+      avatar: avatar(g),
+      clan: !!g.BIsClanChatRoom(),
+      named: !!g.IsNamedGroupChat(),
+      members: g.memberCountTotal || 0,
+      online: g.memberCountOnline || 0,
+      inGame: g.memberCountInGame || 0,
+      voice: !!g.hasVoiceRoom,
+      defaultRoom: String(g.GetDefaultChatID()),
+      rooms: rooms,
+      unread: unread,
+      mention: rooms.some(r => r.mention),
+      last: g.time_last_activity || 0,
+    }
+  }).sort((a, b) => b.last - a.last)
+})()
+"""
+
 # Add or take back your reaction on one message, as Steam's own chat does.
 REACT_JS = """
 (async () => {
-  const chat = g_FriendsUIApp.ChatStore.GetFriendChat(%(account)d, true)
+  const chat = %(target)s
+  if (!chat) throw new Error("That chat isn't available")
   const m = chat.chat_messages.find(m => m.rtTimestamp === %(ts)d && m.unOrdinal === %(ordinal)d)
   if (!m) throw new Error("That message isn't loaded any more")
   return await chat.UpdateMessageReaction(m, %(type)d, %(reaction)s, %(add)s)
@@ -556,7 +613,8 @@ REACT_JS = """
 
 SEND_JS = """
 (() => {
-  const chat = g_FriendsUIApp.ChatStore.GetFriendChat(%(account)d, true)
+  const chat = %(target)s
+  if (!chat) throw new Error("That chat isn't available")
   chat.SendChatMessage(%(text)s)
   return "sent"
 })()
@@ -615,6 +673,16 @@ def youtube_info(video_id):
     return info
 
 
+def chat_target(target):
+    """JS for a chat: a friend's (account id) or a group chat room (groupid:roomid)."""
+    m = re.fullmatch(r"(\d{1,20}):(\d{1,20})", target)
+    if m:
+        return 'g_FriendsUIApp.ChatStore.GetChatRoomGroup("%s").GetChatRoom("%s")' % m.groups()
+    if re.fullmatch(r"\d{1,10}", target):
+        return "g_FriendsUIApp.ChatStore.GetFriendChat(%d, true)" % int(target)
+    raise ValueError("not a chat: %s" % target)
+
+
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "eval":
@@ -631,7 +699,7 @@ def main(argv):
         return value
     if cmd == "chat":
         read = "true" if len(argv) > 3 and argv[3] == "read" else "false"
-        value = evaluate(CHAT_JS % {"account": int(argv[2]), "read": read, "html": HTML_JS, "embeds": EMBEDS_JS})
+        value = evaluate(CHAT_JS % {"target": chat_target(argv[2]), "read": read, "html": HTML_JS, "embeds": EMBEDS_JS})
         for m in value.get("messages", []) if isinstance(value, dict) else []:
             for card in m.get("cards") or []:
                 if card.get("type") == "store":
@@ -644,11 +712,13 @@ def main(argv):
         reaction = argv[6]
         if not re.fullmatch(r":?[\w-]{1,64}:?", reaction):
             raise ValueError("not a reaction: %s" % reaction)
-        return evaluate(REACT_JS % {"account": int(argv[2]), "ts": int(argv[3]), "ordinal": int(argv[4]),
+        return evaluate(REACT_JS % {"target": chat_target(argv[2]), "ts": int(argv[3]), "ordinal": int(argv[4]),
                                     "type": int(argv[5]), "reaction": json.dumps(reaction),
                                     "add": "true" if argv[7] == "add" else "false"})
     if cmd == "send":
-        return evaluate(SEND_JS % {"account": int(argv[2]), "text": json.dumps(sys.stdin.read())})
+        return evaluate(SEND_JS % {"target": chat_target(argv[2]), "text": json.dumps(sys.stdin.read())})
+    if cmd == "groups":
+        return evaluate(GROUPS_JS)
     if cmd == "wizard-state":
         return evaluate("SteamClient.Installs.GetInstallManagerInfo().then(i => i.eInstallState)")
     if cmd == "overview":

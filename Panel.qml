@@ -178,6 +178,12 @@ Panel {
   // a Remote Play computer's id), and whether it's split into a section
   // per computer (the default when other computers have games to stream).
   property string libraryPc: ""
+
+  function pickPc(id) {
+    libraryPc = id
+    rowIndex = 0
+    list.positionViewAtBeginning()
+  }
   readonly property bool groupByPc: pref("groupByPc", true) !== false
   readonly property bool hasStreams: remoteDevices.length > 0 && Object.keys(remoteApps).length > 0
 
@@ -642,6 +648,80 @@ Panel {
     foreground: root.foreground
     dim: root.dim
     fontFamily: root.fontFamily
+  }
+
+  // A filter as a chip: icon, label, an optional count; selected ones are
+  // outlined. actionIcon adds a button shown on hover (e.g. Remote Play).
+  component FilterChip: Rectangle {
+    id: chip
+    property string icon: ""
+    property string label: ""
+    property string detail: ""
+    property bool selected: false
+    property string actionIcon: ""
+    property string actionTip: ""
+    signal clicked()
+    signal actionClicked()
+    implicitWidth: chipRow.implicitWidth + Style.space(16)
+    implicitHeight: Style.space(30)
+    radius: Style.space(6)
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, selected ? 0.16 : chipHover.hovered ? 0.1 : 0.05)
+    border.width: 1
+    border.color: selected ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, chipHover.hovered ? 0.35 : 0.14)
+
+    HoverHandler { id: chipHover }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: chip.clicked()
+    }
+
+    Row {
+      id: chipRow
+      anchors.centerIn: parent
+      spacing: Style.space(6)
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        visible: chip.icon !== ""
+        text: chip.icon
+        color: chip.selected ? root.onlineColor : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        text: chip.label
+        color: chip.selected || chipHover.hovered ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        visible: chip.detail !== ""
+        text: chip.detail
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+
+      // Faint until the chip is hovered.
+      PanelActionButton {
+        anchors.verticalCenter: parent.verticalCenter
+        visible: chip.actionIcon !== ""
+        opacity: chipHover.hovered ? 1 : 0.35
+        size: Style.space(20)
+        iconText: chip.actionIcon
+        tooltipText: chip.actionTip
+        foreground: root.onlineColor
+        fontFamily: root.fontFamily
+        fontSize: Style.font.caption
+        onClicked: chip.actionClicked()
+      }
+    }
   }
 
   component FilterTick: Item {
@@ -2203,7 +2283,6 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       blocked: filterField.activeFocus || chatView.inputFocused || apiKeyField.activeFocus || driveField.activeFocus
-        || pcDropdown.popupOpen
       onMoveRequested: function(dx, dy) {
         if (dx !== 0 && root.storeOpen) root.stepMedia(dx)
         else if (dx !== 0) root.switchTab(dx)
@@ -2428,86 +2507,44 @@ Panel {
           onChanged: function(v) { root.storeKind = v }
         }
 
-        // ---------- Remote Play: your other computers ----------
-        // Click one to stream its whole desktop.
-        ColumnLayout {
+        // ---------- computers: which one's games to show ----------
+        // With other computers to stream from: pick one (or all) to filter
+        // the library; hovering one offers Remote Play of its desktop.
+        Flow {
           Layout.fillWidth: true
-          visible: root.tab === "library" && root.remoteDevices.length > 0
-          spacing: Style.space(4)
+          visible: root.tab === "library" && root.hasStreams
+          spacing: Style.space(6)
 
-          Text {
-            leftPadding: Style.space(2)
-            text: "REMOTE PLAY"
-            color: Qt.darker(root.foreground, 1.4)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: true
-            font.letterSpacing: 1
+          FilterChip {
+            icon: "󰕰"
+            label: "All"
+            selected: root.libraryPc === ""
+            onClicked: root.pickPc("")
           }
 
-          Flow {
-            Layout.fillWidth: true
-            spacing: Style.space(6)
+          FilterChip {
+            icon: "󰌢"
+            label: "This computer"
+            detail: String(root.games.filter(function(g) { return g.installed }).length)
+            selected: root.libraryPc === "local"
+            onClicked: root.pickPc("local")
+          }
 
-            Repeater {
-              model: root.remoteDevices
+          Repeater {
+            model: root.remoteDevices
 
-              Rectangle {
-                id: pcTile
-                required property var modelData
-                width: pcRow.implicitWidth + Style.space(18)
-                height: Style.space(34)
-                radius: Style.space(6)
-                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, pcMouse.containsMouse ? 0.14 : 0.06)
-                border.width: 1
-                border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, pcMouse.containsMouse ? 0.4 : 0.15)
-
-                Row {
-                  id: pcRow
-                  anchors.centerIn: parent
-                  spacing: Style.space(7)
-
-                  Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "󰍹"
-                    color: root.onlineColor
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                  }
-
-                  Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: pcTile.modelData.name
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                  }
-
-                  Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    // Games in your library installed there (not tools or runtimes).
-                    readonly property int count: root.games.filter(function(g) {
-                      return (root.remoteApps[String(g.appid)] || []).indexOf(pcTile.modelData.id) >= 0 }).length
-                    visible: count > 0
-                    text: count + " games"
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                  }
-                }
-
-                MouseArea {
-                  id: pcMouse
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.streamDesktop(pcTile.modelData)
-                }
-
-                ToolTip.visible: pcMouse.containsMouse
-                ToolTip.delay: 400
-                ToolTip.text: "Remote Play " + pcTile.modelData.name + "'s desktop"
-              }
+            FilterChip {
+              required property var modelData
+              icon: "󰍹"
+              label: modelData.name
+              // Games in your library installed there (not tools or runtimes).
+              detail: String(root.games.filter(function(g) {
+                return (root.remoteApps[String(g.appid)] || []).indexOf(modelData.id) >= 0 }).length)
+              selected: root.libraryPc === modelData.id
+              actionIcon: "󰐊"
+              actionTip: "Remote Play " + modelData.name + "'s desktop"
+              onClicked: root.pickPc(modelData.id)
+              onActionClicked: root.streamDesktop(modelData)
             }
           }
         }
@@ -2675,74 +2712,40 @@ Panel {
             }
           }
 
-          RowLayout {
-          Layout.fillWidth: true
-          visible: root.tab === "library"
-          spacing: Style.space(14)
-
-          FilterTick {
-            label: "Installed"
-            implicitHeight: filterField.height
-            foreground: root.foreground
-            dim: root.dim
-            fontFamily: root.fontFamily
-            checked: root.installedOnly
-            onToggled: { root.installedOnly = !root.installedOnly; if (root.installedOnly) root.uninstalledOnly = false }
-          }
-
-          FilterTick {
-            label: "Most played"
-            implicitHeight: filterField.height
-            foreground: root.foreground
-            dim: root.dim
-            fontFamily: root.fontFamily
-            checked: root.mostPlayed
-            onToggled: root.mostPlayed = !root.mostPlayed
-          }
-
-          FilterTick {
-            label: "Uninstalled"
-            implicitHeight: filterField.height
-            foreground: root.foreground
-            dim: root.dim
-            fontFamily: root.fontFamily
-            checked: root.uninstalledOnly
-            onToggled: { root.uninstalledOnly = !root.uninstalledOnly; if (root.uninstalledOnly) root.installedOnly = false }
-          }
-
-          Item { Layout.fillWidth: true }
-          }
-
-          // With games to stream from other computers: which computer to
-          // show, and whether to split the list by computer.
-          RowLayout {
+          // The library's options, as chips like the computers above.
+          Flow {
             Layout.fillWidth: true
-            visible: root.tab === "library" && root.hasStreams
-            spacing: Style.space(14)
+            visible: root.tab === "library"
+            spacing: Style.space(6)
 
-            Dropdown {
-              id: pcDropdown
-              Layout.preferredWidth: Style.space(190)
-              showLabel: false
-              fontFamily: root.fontFamily
-              foreground: root.foreground
-              value: root.libraryPc
-              options: [{ value: "", label: "All computers" }, { value: "local", label: "This computer" }]
-                .concat(root.remoteDevices.map(function(d) { return { value: d.id, label: d.name } }))
-              onChanged: function(v) { root.libraryPc = v; root.rowIndex = 0; list.positionViewAtBeginning() }
+            FilterChip {
+              icon: "󰄲"
+              label: "Installed"
+              selected: root.installedOnly
+              onClicked: { root.installedOnly = !root.installedOnly; if (root.installedOnly) root.uninstalledOnly = false }
             }
 
-            FilterTick {
+            FilterChip {
+              icon: "󰔟"
+              label: "Most played"
+              selected: root.mostPlayed
+              onClicked: root.mostPlayed = !root.mostPlayed
+            }
+
+            FilterChip {
+              icon: "󰇚"
+              label: "Uninstalled"
+              selected: root.uninstalledOnly
+              onClicked: { root.uninstalledOnly = !root.uninstalledOnly; if (root.uninstalledOnly) root.installedOnly = false }
+            }
+
+            FilterChip {
+              visible: root.hasStreams
+              icon: "󰕰"
               label: "Group by computer"
-              implicitHeight: filterField.height
-              foreground: root.foreground
-              dim: root.dim
-              fontFamily: root.fontFamily
-              checked: root.groupByPc
-              onToggled: root.savePref("groupByPc", !root.groupByPc)
+              selected: root.groupByPc
+              onClicked: root.savePref("groupByPc", !root.groupByPc)
             }
-
-            Item { Layout.fillWidth: true }
           }
         }
 

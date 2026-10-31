@@ -14,11 +14,10 @@ A bar widget for [Omarchy](https://omarchy.org)'s shell that puts Steam in a pop
 - **Recent**: your recently played, installed games. Click to play.
 - **Library**: everything you own, searchable (`/`). It opens on **Installed** games, which
   includes games installed on your other computers (Remote Play): click one to stream it, or hover
-  to pick another computer or install here. With other computers around, the list is split into a
-  section per computer (**Group by computer**), a dropdown shows one computer's games, and a tile
-  per computer at the top streams its whole desktop. Untick **Installed** to see everything, tick
-  **Uninstalled** for the games you can't play yet, or **Most played** to sort by hours.
-  Uninstalled games install to the drive of your choice.
+  to pick another computer or install here. With other computers around, chips at the top pick
+  which computer's games to show (hover one and press ▶ to Remote Play its desktop), and the list
+  is split into a section per computer (**Group by computer**). The **Installed**, **Most played**
+  and **Uninstalled** chips filter and sort; uninstalled games install to the drive of your choice.
 - **Groups**: your Steam group chats (named groups, Steam group chats and chats with several
   friends), newest first, with unread counts. Open one to read and write in it, switch between its
   rooms, or pop it out into its own window. Needs Steam's debugging port.

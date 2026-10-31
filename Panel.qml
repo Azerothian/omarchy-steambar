@@ -2212,13 +2212,14 @@ Panel {
         }
 
         // ---------- icon bar: one group's friends at a glance ----------
-        RowLayout {
+        ColumnLayout {
           Layout.fillWidth: true
           visible: root.tab === "friends" && root.quickMembers.length > 0
-          spacing: Style.space(8)
+          spacing: Style.space(4)
 
           Text {
-            Layout.maximumWidth: Style.space(70)
+            Layout.fillWidth: true
+            leftPadding: Style.space(2)
             text: root.quickGroupInfo ? root.quickGroupInfo.name : ""
             color: Qt.darker(root.foreground, 1.4)
             font.family: root.fontFamily

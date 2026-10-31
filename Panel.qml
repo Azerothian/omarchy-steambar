@@ -834,8 +834,8 @@ Panel {
   }
 
   // Opens the chat in its own window, or brings its window forward
-  // (switching workspace if it's on another) when it's already open. Any
-  // window opened from the popup closes the popup.
+  // (switching workspace if it's on another) when it's already open, and
+  // closes the popup.
   function popOutChat(friend) {
     if (!friend) return
     var id = String(friend.accountid)
@@ -875,7 +875,6 @@ Panel {
     videoStarts = starts
     if (videoViewers.indexOf(src) < 0) videoViewers = videoViewers.concat([src])
     else focusWindow(videoTitle(src))
-    close()
   }
 
   function closeVideo(src) {
@@ -892,7 +891,6 @@ Panel {
     Quickshell.execDetached(["sh", "-c",
       "if command -v mpv >/dev/null; then exec mpv --force-window=immediate --title=\"$2\" -- \"$1\"; else exec xdg-open \"$1\"; fi",
       "youtube", "https://www.youtube.com/watch?v=" + card.id, "YouTube · " + (card.title || card.id)])
-    close()
   }
 
   function mediaTime(ms) {
@@ -908,7 +906,6 @@ Panel {
     if (!src) return
     if (imageViewers.indexOf(src) < 0) imageViewers = imageViewers.concat([src])
     else focusWindow(imageTitle(src))
-    close()
   }
 
   function closeImage(src) {

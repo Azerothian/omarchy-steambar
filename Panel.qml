@@ -59,7 +59,6 @@ Panel {
   readonly property bool installedByDefault: pref("installedByDefault", true) !== false
   readonly property bool showOfflineFriends: pref("showOfflineFriends", true) !== false
   readonly property bool showSteamNames: pref("showSteamNames", true) !== false
-  readonly property bool chatInWindow: pref("chatInWindow", false) === true
   readonly property bool showMessageTimes: pref("showMessageTimes", true) !== false
   // Groups shown as rows of avatars above the friends search instead of in
   // the list (the box on a group's header). Saved as space-separated ids.
@@ -94,10 +93,8 @@ Panel {
     return f.gameIcon || "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/" + f.appid + "/capsule_sm_120.jpg"
   }
 
-  function chatWith(friend) {
-    if (chatInWindow && controllable) popOutChat(friend)
-    else openChat(friend)
-  }
+  // A click opens the chat beside the list; the window button pops it out.
+  function chatWith(friend) { openChat(friend) }
   // Set by commands that open the popup on a particular tab.
   property bool keepTab: false
 
@@ -794,10 +791,7 @@ Panel {
     Qt.callLater(function() { chatView.focusInput() })
   }
 
-  function chatWithGroup(group) {
-    if (chatInWindow) popOutGroup(group)
-    else openGroupChat(group)
-  }
+  function chatWithGroup(group) { openGroupChat(group) }
 
   function closeChat() {
     chatFriend = null
@@ -2917,12 +2911,6 @@ Panel {
               label: "Show Steam names beside nicknames"
               checked: root.showSteamNames
               onToggled: root.savePref("showSteamNames", !root.showSteamNames)
-            }
-
-            SettingsToggle {
-              label: "Open chats in their own window"
-              checked: root.chatInWindow
-              onToggled: root.savePref("chatInWindow", !root.chatInWindow)
             }
 
             SettingsToggle {

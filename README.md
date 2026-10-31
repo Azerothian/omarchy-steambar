@@ -2,31 +2,90 @@
 
 A bar widget for [Omarchy](https://omarchy.org)'s shell that puts Steam in a popup:
 
-<p>
-  <img src="screenshots/tour.gif" alt="The Steam popup switching between the Store, Recent and Library tabs" height="340">
+<p align="center">
+  <img src="screenshots/demo.gif" alt="A tour of the popup on a demo account: friends with search and collapsible groups, a chat with store, image, video, link and Workshop cards, a group chat with its members, the library's Recent and Remote Play sections, the panel view and game options, the Remote Play prompt, the store and a store page, and Settings" width="800">
+</p>
+
+<sub>Recorded on the built-in [demo account](#demo-mode): the people and chats are made up.
+[MP4 version](screenshots/demo.mp4).</sub>
+
+### Friends
+
+- Who's online, away, busy or in a game, with the game's icon and its rich presence ("Hazard 4 ·
+  Mining Expedition").
+- The nicknames you've given people, with their Steam name beside them (optional).
+- Your Steam friend groups and Favorites as sections. Collapse any section from its header, and it
+  keeps your place in the list. Hide offline friends if you like.
+- Show a group as **icons**: tick the box on its header and its friends become a scrolling row of
+  avatars in its place (mouse wheel, touch or drag).
+- Search by name, and see unread counts.
+
+### Chat
+
+- Click a friend to chat beside the list. Use the window button to pop the chat out into its own
+  window; clicking it again focuses that window, switching workspace if needed.
+- Send with `Enter` or the send button. Messages show times inline and reactions you can add or
+  take back. You can see when someone is typing.
+- Shared things become cards:
+  - store links and Workshop items
+  - images, which open a zoom viewer (click for 10% steps, or `Shift` + wheel around the pointer)
+  - Steam videos, which play inline or in a window
+  - YouTube links, which play in `mpv`
+  - link previews
+  - any other Steam tag, shown with its fields and a button to copy the original
+- Emoticons, stickers and links all render.
+
+### Groups
+
+- Your Steam group chats (named groups, Steam group chats and chats with several friends), newest
+  first, with unread counts and `@` mentions.
+- Open one to see its members as avatars (online first), read and write in it, switch between its
+  rooms, or pop it out into its own window.
+
+### Library
+
+- Everything you own, searchable (`/`). It's laid out in three sections:
+  - **Recent**: the games you played last.
+  - **Remote Play**: with other computers signed in to Steam, a row per computer with how many of
+    your games it can stream. Click one to Remote Play its desktop.
+  - **Games**: the rest.
+- Recent and Remote Play minimise like friend groups, and Remote Play can show its computers as
+  icons.
+- One line of chips filters every section:
+  - **Installed** (on by default, and including games installed on your other computers)
+  - **Uninstalled** and **Most played**
+  - **Group by computer**
+  - This PC, and a chip per computer, to show only that computer's games
+- Click a game to play it, or to stream it from another computer (it asks first). Hover a game to
+  pick another computer or install it here.
+- **Panel view** shows each section as a wrapping grid of portrait covers. Click a cover for its
+  options: play, stream, install, store page, open in Steam, properties, uninstall.
+
+### Downloads
+
+- Live progress, speed and time left, with pause and resume.
+- Runtimes and redistributables count as part of the game they're for.
+- Collapse the section with its header or `d`.
+
+### Store
+
+- The store's top 50 sellers, popular upcoming games and popular new releases.
+- Click a game you don't own (or press `i` on any game) to open its store page beside the list:
+  trailers and screenshots, description, reviews, tags, Steam Deck status, system requirements and
+  the most helpful reviews. Buying opens Steam.
+
+<p align="center">
   <img src="screenshots/store-page.gif" alt="Store pages with trailers open beside the list" height="340">
 </p>
 
-- **Store**: the store's top 50 sellers, popular upcoming games and popular new releases.
-  Click a game you don't own (or press `i` on any game) to open its store page right in the
-  popup: trailers and screenshots, description, reviews, tags, Steam Deck status, system
-  requirements and the most helpful reviews. Buying opens Steam.
-- **Library**: everything you own, searchable (`/`). It starts with **Recent** (the games you
-  played last, here or to stream) and, with other computers signed in to Steam, **Remote Play**: a
-  row per computer with how many of your games it can stream; click one to Remote Play its
-  desktop. Both minimise from their header like a friend group, and Remote Play's box shows its
-  computers as icons. One line of chips filters the games: **Installed** (on by default, and
-  including games installed on your other computers), **Uninstalled**, **Most played** and **Group
-  by computer** as icons, then This PC and a chip per computer to show only its games (click again
-  for all). Click a game to play or stream it, or hover to pick another computer or install here. The first
-  chip switches to **panel view**: each section's games as a wrapping grid of portrait covers, and clicking
-  one shows its options (play, stream, install, store page, open in Steam, properties, uninstall).
-- **Groups**: your Steam group chats (named groups, Steam group chats and chats with several
-  friends), newest first, with unread counts. Open one to see its members as avatars (online first),
-  read and write in it, switch between its rooms, or pop it out into its own window. Needs Steam's debugging port.
-- **Downloads**: live progress, speed and time left, with pause/resume. Collapse the section
-  with its header or `d`.
-- **Friends**: who's online and what they're playing, with chat in the popup.
+### Everywhere
+
+- Click the Steam logo in the header to open Steam.
+- A banner says when Steam's debugging port is missing and what that limits, with a button to start
+  or restart Steam.
+- The last friend list is cached in SQLite and shown instantly, then updated.
+- The popup and its panes can be resized (see [Resizing](#resizing)).
+- The [Settings](#settings) tab holds the options.
 
 It reads the Steam client's own files, so there's no sign-in or API key to set up.
 
@@ -119,7 +178,7 @@ in `~/.cache/blip-steam`. Prices are in US dollars.
 
 ## Demo mode
 
-[`screenshots/demo.mp4`](screenshots/demo.mp4) is the widget running on a made-up account. To try it:
+The recording at the top ([GIF](screenshots/demo.gif), [MP4](screenshots/demo.mp4)) is the widget running on a made-up account. To try it:
 
 ```sh
 cd ~/.config/omarchy/plugins/blip.steam

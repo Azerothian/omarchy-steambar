@@ -760,6 +760,8 @@ Panel {
     property real startW: 0
     property real startH: 0
     property string target: "list"
+    // A border (the whole side, width only) rather than a corner.
+    property bool edge: false
     // How fast this edge moves per unit of width, and the bottom per unit of height.
     function rates() { return { width: root.edgeRate(side), height: root.edgeRate("bottom") } }
     visible: root.opened && rates().width > 0
@@ -767,11 +769,11 @@ Panel {
     height: width
     hoverEnabled: true
     preventStealing: true
-    cursorShape: side === "right" ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor
+    cursorShape: edge ? Qt.SizeHorCursor : side === "right" ? Qt.SizeFDiagCursor : Qt.SizeBDiagCursor
 
     // Two short strokes in the corner.
     Repeater {
-      model: 2
+      model: grip.edge ? 0 : 2
       Rectangle {
         required property int index
         width: Style.space(index ? 6 : 11)
@@ -807,7 +809,7 @@ Panel {
         else if (target === "store") root.dragStore = w
         else root.dragList = w
       }
-      if (heightRate > 0)
+      if (heightRate > 0 && !edge)
         root.dragHeight = Math.max(root.minHeight, Math.min(panel.availableCardHeight, startH + (g.y - start.y) / heightRate))
     }
     onReleased: root.finishResize()
@@ -2516,6 +2518,33 @@ Panel {
 
     ResizeGrip { side: "left"; anchors.left: parent.left; anchors.bottom: parent.bottom; z: 20 }
     ResizeGrip { side: "right"; anchors.right: parent.right; anchors.bottom: parent.bottom; z: 20 }
+
+    // The side borders resize the width too; they sit mostly in the
+    // popup's padding so they don't take clicks from what's inside.
+    ResizeGrip {
+      side: "left"
+      edge: true
+      anchors.left: parent.left
+      anchors.leftMargin: -panel.padding
+      anchors.top: parent.top
+      anchors.bottom: parent.bottom
+      anchors.bottomMargin: Style.space(18)
+      width: panel.padding + Style.space(3)
+      height: undefined
+      z: 19
+    }
+    ResizeGrip {
+      side: "right"
+      edge: true
+      anchors.right: parent.right
+      anchors.rightMargin: -panel.padding
+      anchors.top: parent.top
+      anchors.bottom: parent.bottom
+      anchors.bottomMargin: Style.space(18)
+      width: panel.padding + Style.space(3)
+      height: undefined
+      z: 19
+    }
 
     // Panel view: a game's options (play, stream, install, store page...).
     Rectangle {

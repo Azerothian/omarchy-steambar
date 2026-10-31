@@ -59,7 +59,8 @@ pause/resume is hidden.
 
 ## Resizing
 
-Drag a bottom corner of the popup to resize it (the grip shows on the side that can move), and the
+Drag a bottom corner of the popup to resize it, or its side border for the width (on the side that
+can move), and the
 line between the list and an open chat or store page to share the width between them. Sizes are
 kept.
 

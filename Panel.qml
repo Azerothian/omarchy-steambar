@@ -208,11 +208,34 @@ Panel {
   // Under Remote Play, an ungrouped list gets a header of its own.
   // Recently played heads the library (above Remote Play), minimising like
   // a friend group; hidden while searching.
+  // The library's Recent: your latest games that pass its filters (the
+  // search, Installed / Uninstalled / Most played, the computer chip), up
+  // to "Games in Recent". The bar button's last-played uses recentGames.
+  readonly property var recentFiltered: {
+    var q = filterText.trim().toLowerCase()
+    var pc = hasStreams ? libraryPc : ""
+    var device = remoteDevices.filter(function(d) { return d.id === pc })[0]
+    var out = []
+    for (var i = 0; i < games.length && out.length < recentCount; i++) {
+      var g = games[i], here = g.installed || streamable(g)
+      if (!(g.lastPlayed > 0)) continue
+      if (q !== "" && g.name.toLowerCase().indexOf(q) < 0) continue
+      if (installedOnly && !here) continue
+      if (uninstalledOnly && here) continue
+      if (mostPlayed && !(g.playtime > 0)) continue
+      if (pc === "local" && !g.installed) continue
+      if (device && (remoteApps[String(g.appid)] || []).indexOf(device.id) < 0) continue
+      out.push(device ? Object.assign({}, g, { streamDevice: device }) : g)
+    }
+    if (mostPlayed) out.sort(function(a, b) { return b.playtime - a.playtime })
+    return out
+  }
+
   readonly property var recentRows: {
-    if (!recentGames.length || filterText.trim() !== "") return []
+    if (!recentFiltered.length) return []
     var collapsed = !!collapsedGroups.recent
-    return [{ isHeader: true, sectionId: "recent", name: "Recent", count: recentGames.length,
-              collapsible: true, collapsed: collapsed, first: true }].concat(collapsed ? [] : recentGames)
+    return [{ isHeader: true, sectionId: "recent", name: "Recent", count: recentFiltered.length,
+              collapsible: true, collapsed: collapsed, first: true }].concat(collapsed ? [] : recentFiltered)
   }
 
   readonly property var libraryHead: recentRows.concat(remotePlayRows)
@@ -273,7 +296,7 @@ Panel {
       sections.forEach(function(sec) {
         if (!sec.list.length || (only !== "" && only !== sec.id)) return
         out.push({ isHeader: true, name: sec.name, count: sec.list.length, sectionId: sec.id,
-                   first: out.length === 0 && !remoteDevices.length && !recentGames.length })
+                   first: out.length === 0 && !remoteDevices.length && !recentRows.length })
         out = out.concat(sec.list.sort(byName))
       })
       return out

@@ -151,7 +151,7 @@ def evaluate(js, timeout=15):
 FOLDERS_JS = """
 SteamClient.InstallFolder.GetInstallFolders().then(f => f.filter(x => x.bIsMounted).map(x => ({
   index: x.nFolderIndex, path: x.strFolderPath, label: x.strUserLabel, drive: x.strDriveName,
-  free: x.nFreeSpace, capacity: x.nCapacity, isDefault: x.bIsDefaultFolder })))
+  free: x.nFreeSpace, isDefault: x.bIsDefaultFolder })))
 """
 
 OVERVIEW_JS = """
@@ -532,7 +532,7 @@ EMBEDS_JS = r"""(s => {
     .replace(/\[video(\s[^\]]*)?\]([\s\S]*?)\[\/video\]/gi, (all, a, body) => {
       const src = attr(a, "src") || (body.match(/https?:\/\/[^\s\[\]"]+/) || [""])[0]
       if (!/^https:\/\//.test(src)) return all
-      cards.push({ type: "video", src: src, mime: attr(a, "type") })
+      cards.push({ type: "video", src: src })
       return ""
     })
     .replace(/\[youtube(=[^\s\]]+)?(\s[^\]]*)?\]([\s\S]*?)\[\/youtube\]/gi, (all, first, a, body) => {
@@ -609,7 +609,7 @@ GROUPS_JS = """
   return Array.from(g_FriendsUIApp.ChatStore.currentChatRoomGroups || []).map(g => {
     const rooms = Array.from(g.textRoomList || []).map(r => ({
       id: String(r.GetRoomID()), name: r.name || "", unread: r.unread_message_count || 0,
-      mention: !!r.has_unread_mention, last: r.time_last_message || 0,
+      mention: !!r.has_unread_mention,
     }))
     const unread = rooms.reduce((n, r) => n + r.unread, 0)
     return {
@@ -617,19 +617,14 @@ GROUPS_JS = """
       name: g.name || "",
       tagline: g.tagline || "",
       avatar: avatar(g),
-      clan: !!g.BIsClanChatRoom(),
-      named: !!g.IsNamedGroupChat(),
       members: g.memberCountTotal || 0,
-      online: g.memberCountOnline || 0,
-      inGame: g.memberCountInGame || 0,
-      voice: !!g.hasVoiceRoom,
       defaultRoom: String(g.GetDefaultChatID()),
       rooms: rooms,
       unread: unread,
       mention: rooms.some(r => r.mention),
-      last: g.time_last_activity || 0,
+      activity: g.time_last_activity || 0,
     }
-  }).sort((a, b) => b.last - a.last)
+  }).sort((a, b) => b.activity - a.activity)
 })()
 """
 

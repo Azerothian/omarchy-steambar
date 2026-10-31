@@ -67,6 +67,12 @@ Panel {
     if (typeof v === "string") v = v.split(/\s+/)
     return Array.isArray(v) ? v.map(String).filter(function(id) { return id !== "" }) : []
   }
+  // The box on a header: a friend group's icons, or Remote Play's.
+  function toggleSectionIcons(id) {
+    if (id === "remoteplay") savePref("remotePlayIcons", !remotePlayIcons)
+    else toggleIconGroup(id)
+  }
+
   function toggleIconGroup(id) {
     var list = iconGroups.slice(), at = list.indexOf(id)
     if (at >= 0) list.splice(at, 1); else list.push(id)
@@ -81,7 +87,6 @@ Panel {
     if (g && g.icon) return g.icon
     return f.gameIcon || "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/" + f.appid + "/capsule_sm_120.jpg"
   }
-
 
   // An avatar clicked (a friend group's icons, a group chat's members):
   // chat with a friend, or open someone else's Steam profile.
@@ -199,7 +204,7 @@ Panel {
     if (!remoteDevices.length) return []
     var collapsed = !!collapsedGroups.remoteplay
     var out = [{ isHeader: true, sectionId: "remoteplay", name: "Remote Play", count: remoteDevices.length,
-                 collapsible: true, collapsed: collapsed }]
+                 collapsible: true, collapsed: collapsed, tick: true, ticked: remotePlayIcons }]
     var devices = remoteDevices.map(function(d) { return { isDevice: true, device: d, count: pcCounts[d.id] || 0 } })
     if (!collapsed) out = out.concat(remotePlayIcons ? [{ isDeviceBar: true, devices: devices }] : devices)
     return out
@@ -391,8 +396,8 @@ Panel {
       // While searching, every match shows, minimised group or not.
       var collapsed = !!collapsedGroups[sec.id] && q === ""
       out.push({
-        isHeader: true, sectionId: sec.id, name: sec.name, collapsed: collapsed,
-        icons: !!sec.icons,
+        isHeader: true, sectionId: sec.id, name: sec.name, collapsible: true, collapsed: collapsed,
+        tick: sec !== online && sec !== offline, ticked: !!sec.icons,
         count: sec === online ? String(n) : sec === offline ? String(sec.members.length) : n + "/" + sec.members.length,
       })
       var shown = showOfflineFriends ? sec.members : sec.members.filter(function(f) {
@@ -727,8 +732,12 @@ Panel {
     wrapMode: Text.Wrap
   }
 
+  // A Settings tick box for an on-by-default setting, saved as you click.
   component SettingsToggle: FilterTick {
+    property string key: ""
     implicitHeight: Style.space(24)
+    checked: root.pref(key, true) !== false
+    onToggled: root.savePref(key, !checked)
   }
 
   // The line between the list and the chat or store pane: drag to trade
@@ -745,6 +754,15 @@ Panel {
     width: Style.space(12)
     hoverEnabled: true
     cursorShape: Qt.SplitHCursor
+
+    // The line itself, brighter while it's hovered or dragged.
+    Rectangle {
+      anchors.horizontalCenter: parent.horizontalCenter
+      anchors.top: parent.top
+      anchors.bottom: parent.bottom
+      width: 1
+      color: Util.alpha(root.foreground, divider.containsMouse || divider.pressed ? 0.45 : 0.12)
+    }
     preventStealing: true
     onPressed: function(mouse) {
       startX = mapToGlobal(mouse.x, mouse.y).x
@@ -883,6 +901,57 @@ Panel {
     font.pixelSize: Style.font.caption
     font.bold: true
     font.letterSpacing: 1.2
+  }
+
+  // An unread count in a pill (on a friend or a group chat).
+  component CountPill: Rectangle {
+    property alias text: pillText.text
+    Layout.preferredHeight: Style.space(16)
+    Layout.preferredWidth: Math.max(height, pillText.implicitWidth + Style.space(10))
+    radius: height / 2
+    color: root.onlineColor
+
+    Text {
+      id: pillText
+      anchors.centerIn: parent
+      color: "black"
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+    }
+  }
+
+  // The Steam logo: click to open Steam.
+  component SteamLogo: Text {
+    text: "󰓓"
+    color: logoMouse.containsMouse ? root.onlineColor : root.foreground
+    font.family: root.fontFamily
+
+    MouseArea {
+      id: logoMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.launch("steam://open/main")
+    }
+    ToolTip.visible: logoMouse.containsMouse
+    ToolTip.delay: 400
+    ToolTip.text: "Open Steam"
+  }
+
+  // A cropped picture (avatar, icon, cover) in a rounded box.
+  component ArtBox: ClippingRectangle {
+    property alias source: artImage.source
+    property alias sourceWidth: artImage.sourceSize.width
+    radius: Style.space(4)
+    color: Util.alpha(root.foreground, 0.08)
+
+    Image {
+      id: artImage
+      anchors.fill: parent
+      fillMode: Image.PreserveAspectCrop
+      asynchronous: true
+    }
   }
 
   // A presence or unread dot, ringed in the background colour so it stands
@@ -1253,7 +1322,6 @@ Panel {
     if (!chatGroup || chatGroup.id !== group.id) chatGroup = group
     Qt.callLater(function() { chatView.focusInput() })
   }
-
 
   function closeChat() {
     chatFriend = null
@@ -1747,7 +1815,6 @@ Panel {
       : ["#" + g.rank, mine || price]
     return parts.filter(function(x) { return !!x }).join(" · ")
   }
-
 
   function playtimeLabel(minutes) {
     if (!minutes) return ""
@@ -2490,7 +2557,7 @@ Panel {
           root.friendsError = d.error || ""
           if (d.friends) {
             if (root.changed("friends", d.friends))
-              root.keepScroll(function() { root.friends = d.friends; root.friendGroups = d.groups || [] })
+              root.keepScroll(function() { root.friends = root.sortFriends(d.friends); root.friendGroups = d.groups || [] })
             root.friendsCached = false
           }
         } catch (e) {
@@ -2627,19 +2694,12 @@ Panel {
             Layout.fillWidth: true
             spacing: Style.space(10)
 
-            ClippingRectangle {
+            ArtBox {
+              source: root.gameOptions ? root.imageSource(root.gameOptions.icon) : ""
+              sourceWidth: 72
               Layout.preferredWidth: Style.space(36)
               Layout.preferredHeight: Style.space(36)
               radius: Style.space(5)
-              color: Util.alpha(root.foreground, 0.08)
-
-              Image {
-                anchors.fill: parent
-                source: root.gameOptions ? root.imageSource(root.gameOptions.icon) : ""
-                sourceSize.width: 72
-                fillMode: Image.PreserveAspectCrop
-                asynchronous: true
-              }
             }
 
             ColumnLayout {
@@ -2880,29 +2940,14 @@ Panel {
         property int dragFrom: -1
         property int dragTo: -1
 
-        Text {
+        SteamLogo {
           id: logo
           visible: !root.railTop
           width: root.railWidth
           height: Style.space(56)
           horizontalAlignment: Text.AlignHCenter
           verticalAlignment: Text.AlignVCenter
-          text: "󰓓"
-          color: logoMouse.containsMouse ? root.onlineColor : root.foreground
-          font.family: root.fontFamily
           font.pixelSize: Style.font.display
-
-          // Click the logo to open Steam.
-          MouseArea {
-            id: logoMouse
-            anchors.fill: parent
-            hoverEnabled: true
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.launch("steam://open/main")
-          }
-          ToolTip.visible: logoMouse.containsMouse
-          ToolTip.delay: 400
-          ToolTip.text: "Open Steam"
         }
 
         Repeater {
@@ -2969,27 +3014,13 @@ Panel {
           Layout.fillWidth: true
           Layout.preferredHeight: Style.space(56)
 
-          Text {
+          SteamLogo {
             id: headerLogo
             visible: root.railTop
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: "󰓓"
-            color: headerLogoMouse.containsMouse ? root.onlineColor : root.foreground
-            font.family: root.fontFamily
             // As tall as the title and the line under it.
             font.pixelSize: headerText.implicitHeight * 0.95
-
-            MouseArea {
-              id: headerLogoMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.launch("steam://open/main")
-            }
-            ToolTip.visible: headerLogoMouse.containsMouse
-            ToolTip.delay: 400
-            ToolTip.text: "Open Steam"
           }
 
           Column {
@@ -3475,8 +3506,7 @@ Panel {
 
             SettingsToggle {
               label: "Open on the first tab"
-              checked: root.openFirstTab
-              onToggled: root.savePref("openFirstTab", !root.openFirstTab)
+              key: "openFirstTab"
             }
 
             SettingsNote {
@@ -3534,8 +3564,7 @@ Panel {
 
             SettingsToggle {
               label: "Start with Installed ticked"
-              checked: root.installedByDefault
-              onToggled: { root.savePref("installedByDefault", !root.installedByDefault) }
+              key: "installedByDefault"
             }
 
             Text {
@@ -3566,20 +3595,17 @@ Panel {
 
             SettingsToggle {
               label: "Show offline friends"
-              checked: root.showOfflineFriends
-              onToggled: root.savePref("showOfflineFriends", !root.showOfflineFriends)
+              key: "showOfflineFriends"
             }
 
             SettingsToggle {
               label: "Show Steam names beside nicknames"
-              checked: root.showSteamNames
-              onToggled: root.savePref("showSteamNames", !root.showSteamNames)
+              key: "showSteamNames"
             }
 
             SettingsToggle {
               label: "Show the time on each message"
-              checked: root.showMessageTimes
-              onToggled: root.savePref("showMessageTimes", !root.showMessageTimes)
+              key: "showMessageTimes"
             }
 
             Text {
@@ -3682,9 +3708,10 @@ Panel {
             required property int index
             // Leave a gutter for the scrollbar so it doesn't sit on the row's buttons.
             width: list.width - (list.contentHeight > list.height ? listBar.width + Style.space(2) : 0)
-            sourceComponent: root.tab === "friends" ? (modelData && modelData.isIconBar ? friendIconBar : friendRow)
+            sourceComponent: modelData && modelData.isHeader ? sectionHeader
+              : root.tab === "friends" ? (modelData && modelData.isIconBar ? friendIconBar : friendRow)
               : root.tab === "groups" ? groupRow
-              : root.tab === "store" ? storeRow : modelData && modelData.isHeader ? libraryHeader
+              : root.tab === "store" ? storeRow
               : modelData && modelData.isDevice ? deviceRow : modelData && modelData.isDeviceBar ? deviceBar
               : modelData && modelData.isGameGrid ? gameGrid : libraryRow
             property var entry: modelData
@@ -3727,15 +3754,6 @@ Panel {
         anchors.top: parent.top
         anchors.bottom: parent.bottom
 
-        Rectangle {
-          anchors.right: parent.left
-          anchors.rightMargin: panel.padding
-          anchors.top: parent.top
-          anchors.bottom: parent.bottom
-          width: 1
-          color: Util.alpha(root.foreground, chatDivider.containsMouse || chatDivider.pressed ? 0.45 : 0.12)
-        }
-
         PaneDivider {
           id: chatDivider
           pane: "chat"
@@ -3769,15 +3787,6 @@ Panel {
 
         readonly property var page: root.storePage
         readonly property var current: root.storeMedia.length ? root.storeMedia[Math.min(root.mediaIndex, root.storeMedia.length - 1)] : null
-
-        Rectangle {
-          anchors.right: parent.left
-          anchors.rightMargin: panel.padding
-          anchors.top: parent.top
-          anchors.bottom: parent.bottom
-          width: 1
-          color: Util.alpha(root.foreground, storeDivider.containsMouse || storeDivider.pressed ? 0.45 : 0.12)
-        }
 
         PaneDivider {
           id: storeDivider
@@ -4481,23 +4490,15 @@ Panel {
     width: Style.space(34)
     height: Style.space(38)
 
-    ClippingRectangle {
+    ArtBox {
+      source: tile.person ? tile.person.avatar || "" : ""
+      sourceWidth: 64
       anchors.centerIn: parent
       width: Style.space(32)
       height: width
-      radius: Style.space(4)
-      color: Util.alpha(root.foreground, 0.08)
       opacity: tile.offline ? 0.4 : 1
       border.width: tileMouse.containsMouse ? 1 : 0
       border.color: root.foreground
-
-      Image {
-        anchors.fill: parent
-        source: tile.person ? tile.person.avatar || "" : ""
-        sourceSize.width: 64
-        fillMode: Image.PreserveAspectCrop
-        asynchronous: true
-      }
 
       // What they're playing, in the corner.
       Image {
@@ -4739,10 +4740,11 @@ Panel {
       + (gt.game.playtime ? " · " + root.playtimeLabel(gt.game.playtime) : "")
   }
 
-  // A section header in the library: Remote Play (which minimises, like a
-  // friend group) or a computer's games when grouped by computer.
+  // A section header (Friends and Library): a group, Recent or Remote Play,
+  // which minimise, or a computer's games when grouped; a box switches a
+  // group or Remote Play between rows and icons.
   Component {
-    id: libraryHeader
+    id: sectionHeader
     Item {
       id: lh
       readonly property var entry: parent ? parent.entry : null
@@ -4757,7 +4759,10 @@ Panel {
         implicitHeight: Style.space(24)
 
         SectionLabel {
-          anchors.fill: parent
+          anchors.left: parent.left
+          anchors.right: iconsTick.visible ? iconsTick.left : parent.right
+          anchors.top: parent.top
+          anchors.bottom: parent.bottom
           anchors.leftMargin: Style.space(6)
           anchors.rightMargin: Style.space(8)
           verticalAlignment: Text.AlignVCenter
@@ -4768,20 +4773,21 @@ Panel {
           elide: Text.ElideRight
         }
 
-        // Remote Play: show the computers as icons (in place) or as rows.
+        // Icons or rows: a friend group's friends, or Remote Play's computers.
         FilterTick {
-          visible: !!lh.entry && lh.entry.sectionId === "remoteplay"
+          id: iconsTick
+          visible: !!lh.entry && !!lh.entry.tick
           anchors.right: parent.right
           anchors.rightMargin: Style.space(8)
           anchors.verticalCenter: parent.verticalCenter
           height: parent.height
           label: ""
-          checked: root.remotePlayIcons
-          ToolTip.visible: remoteIconsHover.hovered
+          checked: !!lh.entry && !!lh.entry.ticked
+          ToolTip.visible: iconsHover.hovered
           ToolTip.delay: 300
           ToolTip.text: checked ? "Show as a list" : "Show as icons"
-          HoverHandler { id: remoteIconsHover }
-          onToggled: root.savePref("remotePlayIcons", !root.remotePlayIcons)
+          HoverHandler { id: iconsHover }
+          onToggled: root.toggleSectionIcons(lh.entry.sectionId)
         }
       }
     }
@@ -4969,19 +4975,12 @@ Panel {
           Layout.preferredWidth: Style.space(22)
           Layout.preferredHeight: Style.space(22)
 
-          ClippingRectangle {
+          ArtBox {
+            source: l.game ? root.imageSource(l.game.icon) : ""
+            sourceWidth: 44
             anchors.fill: parent
             radius: Style.space(3)
-            color: Util.alpha(root.foreground, 0.08)
             opacity: l.game && root.uninstalling[l.game.appid] ? 0.4 : 1
-
-            Image {
-              anchors.fill: parent
-              source: l.game ? root.imageSource(l.game.icon) : ""
-              sourceSize.width: 44
-              fillMode: Image.PreserveAspectCrop
-              asynchronous: true
-            }
           }
         }
 
@@ -5156,19 +5155,11 @@ Panel {
         anchors.rightMargin: Style.space(8)
         spacing: Style.space(10)
 
-        ClippingRectangle {
+        ArtBox {
+          source: gr.group ? gr.group.avatar : ""
+          sourceWidth: 64
           Layout.preferredWidth: Style.space(32)
           Layout.preferredHeight: Style.space(32)
-          radius: Style.space(4)
-          color: Util.alpha(root.foreground, 0.08)
-
-          Image {
-            anchors.fill: parent
-            source: gr.group ? gr.group.avatar : ""
-            sourceSize.width: 64
-            fillMode: Image.PreserveAspectCrop
-            asynchronous: true
-          }
 
           Text {
             anchors.centerIn: parent
@@ -5206,22 +5197,10 @@ Panel {
           }
         }
 
-        Rectangle {
+        CountPill {
           visible: !!gr.group && gr.group.unread > 0
-          Layout.preferredHeight: Style.space(16)
-          Layout.preferredWidth: Math.max(height, groupUnreadLabel.implicitWidth + Style.space(10))
-          radius: height / 2
           color: gr.group && gr.group.mention ? root.warnColor : root.onlineColor
-
-          Text {
-            id: groupUnreadLabel
-            anchors.centerIn: parent
-            text: gr.group ? (gr.group.mention ? "@ " : "") + gr.group.unread : ""
-            color: "black"
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: true
-          }
+          text: gr.group ? (gr.group.mention ? "@ " : "") + gr.group.unread : ""
         }
 
         Text {
@@ -5235,216 +5214,140 @@ Panel {
     }
   }
 
-  // Friends: avatar with a presence dot, name, and what they're doing,
-  // under their group's header when they start one.
+  // Friends: avatar with a presence dot, name, and what they're doing.
   Component {
     id: friendRow
-    Column {
-      id: fc
-      readonly property var entry: parent ? parent.entry : null
-      readonly property int entryIdx: parent ? parent.rowIdx : 0
-      width: parent ? parent.width : 0
+    RowSurface {
+      id: f
+      readonly property var friend: parent ? parent.entry : null
+      readonly property bool isOffline: !friend || friend.state === "offline" || friend.state === "unknown"
+      rowIdx: parent ? parent.rowIdx : 0
+      current: !!friend && !!root.chatFriend && root.chatFriend.accountid === friend.accountid
+      implicitHeight: Style.space(44)
 
-      readonly property bool isHeader: !!entry && !!entry.isHeader
+      RowLayout {
+        anchors.fill: parent
+        anchors.leftMargin: Style.space(6)
+        anchors.rightMargin: Style.space(8)
+        spacing: Style.space(10)
 
-      // A group's header: click (or Enter) to minimise or expand it.
-      Item {
-        width: parent.width
-        visible: fc.isHeader
-        height: visible ? headerRow.height + (fc.entryIdx === 0 ? 0 : Style.space(6)) : 0
+        Item {
+          Layout.preferredWidth: Style.space(32)
+          Layout.preferredHeight: Style.space(32)
 
-        RowSurface {
-          id: headerRow
-          anchors.bottom: parent.bottom
-          rowIdx: fc.entryIdx
-          implicitHeight: Style.space(24)
-
-          SectionLabel {
-            anchors.left: parent.left
-            anchors.right: iconsTick.visible ? iconsTick.left : parent.right
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            anchors.leftMargin: Style.space(6)
-            anchors.rightMargin: Style.space(8)
-            verticalAlignment: Text.AlignVCenter
-            text: !fc.isHeader ? "" : (fc.entry.collapsed ? "󰅂 " : "󰅀 ") + fc.entry.name.toUpperCase() + "  " + fc.entry.count
-            elide: Text.ElideRight
+          ArtBox {
+            source: f.friend ? f.friend.avatar : ""
+            sourceWidth: 64
+            anchors.fill: parent
+            opacity: f.isOffline ? 0.45 : 1
           }
 
-          // Show this group's friends as an icon bar above the search instead.
-          FilterTick {
-            id: iconsTick
-            visible: fc.isHeader && fc.entry.sectionId !== "online" && fc.entry.sectionId !== "offline"
+          Dot {
+            size: Style.space(10)
+            visible: !f.isOffline
             anchors.right: parent.right
-            anchors.rightMargin: Style.space(8)
-            anchors.verticalCenter: parent.verticalCenter
-            height: parent.height
-            label: ""
-            checked: fc.isHeader && !!fc.entry.icons
-            ToolTip.visible: iconsHover.hovered
-            ToolTip.delay: 300
-            ToolTip.text: checked ? "Show as a list" : "Show as icons"
-            HoverHandler { id: iconsHover }
-            onToggled: root.toggleIconGroup(fc.entry.sectionId)
+            anchors.bottom: parent.bottom
+            anchors.rightMargin: -Style.space(2)
+            anchors.bottomMargin: -Style.space(2)
+            color: f.friend ? root.stateColor(f.friend.state) : root.dim
           }
         }
-      }
 
-      RowSurface {
-        id: f
-        visible: !fc.isHeader
-        height: visible ? implicitHeight : 0
-        readonly property var friend: fc.isHeader ? null : fc.entry
-        readonly property bool isOffline: !friend || friend.state === "offline" || friend.state === "unknown"
-        rowIdx: fc.entryIdx
-        current: !!friend && !!root.chatFriend && root.chatFriend.accountid === friend.accountid
-        implicitHeight: Style.space(44)
+        ColumnLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(1)
 
-        RowLayout {
-          anchors.fill: parent
-          anchors.leftMargin: Style.space(6)
-          anchors.rightMargin: Style.space(8)
-          spacing: Style.space(10)
-
+          // Your nickname for them, then their own Steam name. Anchored
+          // rather than laid out: a layout sizing to its own width loops.
           Item {
-            Layout.preferredWidth: Style.space(32)
-            Layout.preferredHeight: Style.space(32)
-
-            ClippingRectangle {
-              anchors.fill: parent
-              radius: Style.space(4)
-              color: Util.alpha(root.foreground, 0.08)
-              opacity: f.isOffline ? 0.45 : 1
-
-              Image {
-                anchors.fill: parent
-                source: f.friend ? f.friend.avatar : ""
-                sourceSize.width: 64
-                fillMode: Image.PreserveAspectCrop
-                asynchronous: true
-              }
-            }
-
-            Dot {
-              size: Style.space(10)
-              visible: !f.isOffline
-              anchors.right: parent.right
-              anchors.bottom: parent.bottom
-              anchors.rightMargin: -Style.space(2)
-              anchors.bottomMargin: -Style.space(2)
-              color: f.friend ? root.stateColor(f.friend.state) : root.dim
-            }
-          }
-
-          ColumnLayout {
             Layout.fillWidth: true
-            spacing: Style.space(1)
-
-            // Your nickname for them, then their own Steam name. Anchored
-            // rather than laid out: a layout sizing to its own width loops.
-            Item {
-              Layout.fillWidth: true
-              implicitHeight: nameLabel.implicitHeight
-
-              Text {
-                id: nameLabel
-                anchors.left: parent.left
-                width: Math.min(implicitWidth, parent.width * (personaLabel.visible ? 0.65 : 1))
-                textFormat: Text.PlainText
-                text: f.friend ? f.friend.name : ""
-                color: f.isOffline ? root.dim : root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                font.bold: !f.isOffline
-                elide: Text.ElideRight
-              }
-
-              Text {
-                id: personaLabel
-                anchors.left: nameLabel.right
-                anchors.leftMargin: Style.space(6)
-                anchors.right: parent.right
-                anchors.baseline: nameLabel.baseline
-                visible: root.showSteamNames && !!f.friend && !!f.friend.personaName
-                textFormat: Text.PlainText
-                text: f.friend ? f.friend.personaName || "" : ""
-                color: root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
-              }
-            }
-
-            RowLayout {
-              Layout.fillWidth: true
-              spacing: Style.space(5)
-
-              // The game they're playing, kept to the line's height.
-              Image {
-                id: gameIconImage
-                visible: source != "" && status === Image.Ready
-                Layout.preferredHeight: Style.space(14)
-                Layout.preferredWidth: implicitHeight > 0 ? Style.space(14) * implicitWidth / implicitHeight : 0
-                source: root.gameIcon(f.friend)
-                sourceSize.height: 32
-                fillMode: Image.PreserveAspectFit
-                asynchronous: true
-              }
-
-              Text {
-                Layout.fillWidth: true
-                textFormat: Text.PlainText
-                text: f.friend ? root.friendLine(f.friend) : ""
-                color: f.friend && !f.isOffline ? root.stateColor(f.friend.state) : root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
-              }
-            }
-          }
-
-          Rectangle {
-            visible: !!f.friend && f.friend.unread > 0
-            Layout.preferredHeight: Style.space(16)
-            Layout.preferredWidth: Math.max(height, unreadLabel.implicitWidth + Style.space(10))
-            radius: height / 2
-            color: root.onlineColor
+            implicitHeight: nameLabel.implicitHeight
 
             Text {
-              id: unreadLabel
-              anchors.centerIn: parent
-              text: f.friend ? String(f.friend.unread) : ""
-              color: "black"
+              id: nameLabel
+              anchors.left: parent.left
+              width: Math.min(implicitWidth, parent.width * (personaLabel.visible ? 0.65 : 1))
+              textFormat: Text.PlainText
+              text: f.friend ? f.friend.name : ""
+              color: f.isOffline ? root.dim : root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              font.bold: !f.isOffline
+              elide: Text.ElideRight
+            }
+
+            Text {
+              id: personaLabel
+              anchors.left: nameLabel.right
+              anchors.leftMargin: Style.space(6)
+              anchors.right: parent.right
+              anchors.baseline: nameLabel.baseline
+              visible: root.showSteamNames && !!f.friend && !!f.friend.personaName
+              textFormat: Text.PlainText
+              text: f.friend ? f.friend.personaName || "" : ""
+              color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
-              font.bold: true
+              elide: Text.ElideRight
             }
           }
 
-          // On hover: open in Steam, or in a chat window of its own.
-          ActionButton {
-            visible: f.hasCursor && !!f.friend
-            iconText: "󰓓"
-            tooltipText: "Open in Steam"
-            foreground: root.dim
-            onClicked: root.launch("steam://friends/message/" + f.friend.steamid)
-          }
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(5)
 
-          ActionButton {
-            visible: f.hasCursor && !!f.friend && root.controllable
-            iconText: "󰏌"
-            tooltipText: "Chat in its own window"
-            foreground: root.dim
-            onClicked: root.popOutChat(f.friend)
-          }
+            // The game they're playing, kept to the line's height.
+            Image {
+              id: gameIconImage
+              visible: source != "" && status === Image.Ready
+              Layout.preferredHeight: Style.space(14)
+              Layout.preferredWidth: implicitHeight > 0 ? Style.space(14) * implicitWidth / implicitHeight : 0
+              source: root.gameIcon(f.friend)
+              sourceSize.height: 32
+              fillMode: Image.PreserveAspectFit
+              asynchronous: true
+            }
 
-          Text {
-            visible: f.hasCursor && !(f.friend && f.friend.unread > 0)
-            text: "󰭹"
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
+            Text {
+              Layout.fillWidth: true
+              textFormat: Text.PlainText
+              text: f.friend ? root.friendLine(f.friend) : ""
+              color: f.friend && !f.isOffline ? root.stateColor(f.friend.state) : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              elide: Text.ElideRight
+            }
           }
+        }
+
+        CountPill {
+          visible: !!f.friend && f.friend.unread > 0
+          text: f.friend ? String(f.friend.unread) : ""
+        }
+
+        // On hover: open in Steam, or in a chat window of its own.
+        ActionButton {
+          visible: f.hasCursor && !!f.friend
+          iconText: "󰓓"
+          tooltipText: "Open in Steam"
+          foreground: root.dim
+          onClicked: root.launch("steam://friends/message/" + f.friend.steamid)
+        }
+
+        ActionButton {
+          visible: f.hasCursor && !!f.friend && root.controllable
+          iconText: "󰏌"
+          tooltipText: "Chat in its own window"
+          foreground: root.dim
+          onClicked: root.popOutChat(f.friend)
+        }
+
+        Text {
+          visible: f.hasCursor && !(f.friend && f.friend.unread > 0)
+          text: "󰭹"
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
         }
       }
     }
@@ -5476,20 +5379,13 @@ Panel {
       anchors.rightMargin: Style.space(8)
       spacing: Style.space(10)
 
-      ClippingRectangle {
+      ArtBox {
+        source: dl.download ? root.imageSource(dl.download.header) : ""
+        sourceWidth: 144
         Layout.preferredWidth: Style.space(72)
         Layout.preferredHeight: Style.space(34)
-        radius: Style.space(4)
         color: Util.alpha(root.foreground, 0.06)
         opacity: dl.download && dl.download.status === "paused" ? 0.5 : 1
-
-        Image {
-          anchors.fill: parent
-          source: dl.download ? root.imageSource(dl.download.header) : ""
-          sourceSize.width: 144
-          fillMode: Image.PreserveAspectCrop
-          asynchronous: true
-        }
       }
 
       ColumnLayout {
@@ -5779,19 +5675,11 @@ Panel {
         Layout.fillWidth: true
         spacing: Style.space(10)
 
-        ClippingRectangle {
+        ArtBox {
+          source: cv.group ? cv.group.avatar : cv.friend ? cv.friend.avatar : ""
+          sourceWidth: 64
           Layout.preferredWidth: Style.space(32)
           Layout.preferredHeight: Style.space(32)
-          radius: Style.space(4)
-          color: Util.alpha(root.foreground, 0.08)
-
-          Image {
-            anchors.fill: parent
-            source: cv.group ? cv.group.avatar : cv.friend ? cv.friend.avatar : ""
-            sourceSize.width: 64
-            fillMode: Image.PreserveAspectCrop
-            asynchronous: true
-          }
 
           Text {
             anchors.centerIn: parent
@@ -6025,20 +5913,13 @@ Panel {
       x: Style.space(2)
       spacing: Style.space(5)
 
-      ClippingRectangle {
+      ArtBox {
+        source: cb.message && cb.message.senderAvatar ? cb.message.senderAvatar : ""
+        sourceWidth: 32
         width: Style.space(16)
         height: width
         radius: Style.space(3)
-        color: Util.alpha(root.foreground, 0.08)
         anchors.verticalCenter: parent.verticalCenter
-
-        Image {
-          anchors.fill: parent
-          source: cb.message && cb.message.senderAvatar ? cb.message.senderAvatar : ""
-          sourceSize.width: 32
-          fillMode: Image.PreserveAspectCrop
-          asynchronous: true
-        }
       }
 
       Text {
@@ -6637,7 +6518,6 @@ Panel {
       onClicked: cc.open()
     }
   }
-
 
   // Smoothed progress for a download. Steam's figures arrive every couple of
   // seconds and in bursts, so between samples this runs ahead at the current

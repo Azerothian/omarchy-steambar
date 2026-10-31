@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Steam data for the blip.steam bar widget, read from the local Steam client.
 
-  steam.py games    -> {"user": {...}, "games": [...]}   (recent + library)
+  steam.py games    -> {"games": [...]}   (recent + library)
   steam.py friends  -> {"friends": [...]}                 (live online status)
   steam.py friends-cached -> {"friends", "groups", "saved", "collapsed"}  (the last list seen, instantly)
   steam.py set-collapsed '["3", "offline"]'  -> remember which friend groups are minimised
@@ -346,7 +346,7 @@ def games():
             "portrait": portrait,
         })
     out.sort(key=lambda g: (-g["lastPlayed"], g["name"].lower()))
-    return {"user": user, "games": out}
+    return {"games": out}
 
 
 # ---------- friends ----------
@@ -499,9 +499,7 @@ def friends():
             error = "Steam Web API: %s" % e
     if people is None:
         people = friends_from_community(user)
-    rank = {"in-game": 0, "online": 1, "busy": 2, "away": 2}
-    people.sort(key=lambda p: (rank.get(p["state"], 3), p["name"].lower()))
-    out = {"friends": people, "groups": [], "source": "api" if key and not error else "community"}
+    out = {"friends": people, "groups": []}
     if error:
         out["error"] = error
     cache.save_friends(people, [])
@@ -990,8 +988,7 @@ def store_page(appid):
         m = obj(m)
         src = m.get("hls_h264") or obj(m.get("mp4")).get("max") or obj(m.get("webm")).get("max")
         if isinstance(src, str) and src:
-            movies.append({"type": "video", "src": clip(src, MAX_URL), "thumb": clip(m.get("thumbnail"), MAX_URL),
-                           "name": clip(m.get("name"), MAX_NAME)})
+            movies.append({"type": "video", "src": clip(src, MAX_URL), "thumb": clip(m.get("thumbnail"), MAX_URL)})
     shots = [{"type": "image", "src": clip(s.get("path_full"), MAX_URL), "thumb": clip(s.get("path_thumbnail"), MAX_URL)}
              for s in seq(d.get("screenshots"), MAX_MEDIA) if isinstance(s, dict)]
     reqs = obj(d.get("pc_requirements"))
@@ -999,7 +996,6 @@ def store_page(appid):
     result = {
         "appid": appid,
         "name": clip(d.get("name"), MAX_NAME),
-        "header": clip(d.get("header_image"), MAX_URL),
         "short": plain(clip(d.get("short_description"), MAX_TEXT)),
         "free": bool(d.get("is_free")),
         "price": "Free to Play" if d.get("is_free") else clip(price.get("final_formatted"), 64),
@@ -1019,14 +1015,11 @@ def store_page(appid):
             "text": clip(r.get("review"), 700).strip() + ("…" if len(clip(r.get("review"), 701)) > 700 else ""),
             "hours": round(number(obj(r.get("author")).get("playtime_forever")) / 60, 1),
             "helpful": number(r.get("votes_up")),
-            "date": number(r.get("timestamp_created")),
         } for r in seq(top.get("reviews"), 10) if isinstance(r, dict)],
         "tags": [names[t["tagid"]] for t in seq(item.get("tags"), 50) if isinstance(t, dict) and t.get("tagid") in names],
-        "genres": names_of(d.get("genres"), "description", 30),
         "features": list(dict.fromkeys(names_of(d.get("categories"), "description", 60))),
         "platforms": {k: bool(obj(d.get("platforms")).get(k)) for k in ("windows", "mac", "linux")},
         "deck": DECK.get(number(platforms.get("steam_deck_compat_category")), ""),
-        "steamos": DECK.get(number(platforms.get("steam_os_compat_category")), ""),
         "languages": re.sub(r"\s*\*?\s*languages with full audio support$", "", plain(clip(d.get("supported_languages"), MAX_TEXT)))
                      .replace(" *", "*").rstrip("* "),
         "achievements": number(obj(d.get("achievements")).get("total")),

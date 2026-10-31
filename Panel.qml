@@ -660,9 +660,13 @@ Panel {
     property bool selected: false
     property string actionIcon: ""
     property string actionTip: ""
+    // Name shown on hover (for icon-only chips).
+    property string tip: ""
+    property real labelMax: 0
+    property bool actionOnHover: false
     signal clicked()
     signal actionClicked()
-    implicitWidth: chipRow.implicitWidth + Style.space(16)
+    implicitWidth: chipRow.implicitWidth + Style.space(label === "" ? 12 : 16)
     implicitHeight: Style.space(30)
     radius: Style.space(6)
     color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, selected ? 0.16 : chipHover.hovered ? 0.1 : 0.05)
@@ -670,6 +674,9 @@ Panel {
     border.color: selected ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, chipHover.hovered ? 0.35 : 0.14)
 
     HoverHandler { id: chipHover }
+    ToolTip.visible: tip !== "" && chipHover.hovered
+    ToolTip.delay: 300
+    ToolTip.text: tip
 
     MouseArea {
       anchors.fill: parent
@@ -693,6 +700,9 @@ Panel {
 
       Text {
         anchors.verticalCenter: parent.verticalCenter
+        visible: chip.label !== ""
+        width: chip.labelMax > 0 ? Math.min(implicitWidth, chip.labelMax) : implicitWidth
+        elide: Text.ElideRight
         text: chip.label
         color: chip.selected || chipHover.hovered ? root.foreground : root.dim
         font.family: root.fontFamily
@@ -708,10 +718,10 @@ Panel {
         font.pixelSize: Style.font.caption
       }
 
-      // Faint until the chip is hovered.
+      // Faint until the chip is hovered (or only then, with actionOnHover).
       PanelActionButton {
         anchors.verticalCenter: parent.verticalCenter
-        visible: chip.actionIcon !== ""
+        visible: chip.actionIcon !== "" && (!chip.actionOnHover || chipHover.hovered)
         opacity: chipHover.hovered ? 1 : 0.35
         size: Style.space(20)
         iconText: chip.actionIcon
@@ -2507,44 +2517,96 @@ Panel {
           onChanged: function(v) { root.storeKind = v }
         }
 
-        // ---------- computers: which one's games to show ----------
-        // With other computers to stream from: pick one (or all) to filter
-        // the library; hovering one offers Remote Play of its desktop.
-        Flow {
+        // ---------- library filters: one line of chips ----------
+        // The options as icons (names on hover), then, with other computers
+        // to stream from, a chip per computer: click to show only its games
+        // (again for all), or hover and press ▶ for Remote Play of its
+        // desktop. The wheel scrolls the line sideways if it doesn't fit.
+        Flickable {
+          id: chipScroll
           Layout.fillWidth: true
-          visible: root.tab === "library" && root.hasStreams
-          spacing: Style.space(6)
+          Layout.preferredHeight: Style.space(30)
+          visible: root.tab === "library"
+          clip: true
+          contentWidth: chipLine.implicitWidth
+          contentHeight: height
+          flickableDirection: Flickable.HorizontalFlick
+          boundsBehavior: Flickable.StopAtBounds
 
-          FilterChip {
-            icon: "󰕰"
-            label: "All"
-            selected: root.libraryPc === ""
-            onClicked: root.pickPc("")
+          WheelHandler {
+            onWheel: function(event) {
+              var d = event.angleDelta.y !== 0 ? event.angleDelta.y : event.angleDelta.x
+              chipScroll.contentX = Math.max(0, Math.min(chipScroll.contentWidth - chipScroll.width, chipScroll.contentX - d / 2))
+            }
           }
 
-          FilterChip {
-            icon: "󰌢"
-            label: "This computer"
-            detail: String(root.games.filter(function(g) { return g.installed }).length)
-            selected: root.libraryPc === "local"
-            onClicked: root.pickPc("local")
-          }
-
-          Repeater {
-            model: root.remoteDevices
+          Row {
+            id: chipLine
+            spacing: Style.space(5)
 
             FilterChip {
-              required property var modelData
-              icon: "󰍹"
-              label: modelData.name
-              // Games in your library installed there (not tools or runtimes).
-              detail: String(root.games.filter(function(g) {
-                return (root.remoteApps[String(g.appid)] || []).indexOf(modelData.id) >= 0 }).length)
-              selected: root.libraryPc === modelData.id
-              actionIcon: "󰐊"
-              actionTip: "Remote Play " + modelData.name + "'s desktop"
-              onClicked: root.pickPc(modelData.id)
-              onActionClicked: root.streamDesktop(modelData)
+              icon: "󰄲"
+              tip: "Installed"
+              selected: root.installedOnly
+              onClicked: { root.installedOnly = !root.installedOnly; if (root.installedOnly) root.uninstalledOnly = false }
+            }
+
+            FilterChip {
+              icon: "󰇚"
+              tip: "Uninstalled"
+              selected: root.uninstalledOnly
+              onClicked: { root.uninstalledOnly = !root.uninstalledOnly; if (root.uninstalledOnly) root.installedOnly = false }
+            }
+
+            FilterChip {
+              icon: "󰔟"
+              tip: "Most played first"
+              selected: root.mostPlayed
+              onClicked: root.mostPlayed = !root.mostPlayed
+            }
+
+            FilterChip {
+              visible: root.hasStreams
+              icon: "󰙅"
+              tip: "Group by computer"
+              selected: root.groupByPc
+              onClicked: root.savePref("groupByPc", !root.groupByPc)
+            }
+
+            Rectangle {
+              visible: root.hasStreams
+              width: 1
+              height: Style.space(20)
+              anchors.verticalCenter: parent.verticalCenter
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
+            }
+
+            FilterChip {
+              visible: root.hasStreams
+              icon: "󰌢"
+              tip: "This PC · " + root.games.filter(function(g) { return g.installed }).length + " installed"
+              selected: root.libraryPc === "local"
+              onClicked: root.pickPc(root.libraryPc === "local" ? "" : "local")
+            }
+
+            Repeater {
+              model: root.hasStreams ? root.remoteDevices : []
+
+              FilterChip {
+                required property var modelData
+                readonly property int count: root.games.filter(function(g) {
+                  return (root.remoteApps[String(g.appid)] || []).indexOf(modelData.id) >= 0 }).length
+                icon: "󰍹"
+                label: modelData.name
+                labelMax: Style.space(84)
+                tip: modelData.name + " · " + count + " games to stream"
+                selected: root.libraryPc === modelData.id
+                actionIcon: "󰐊"
+                actionTip: "Remote Play " + modelData.name + "'s desktop"
+                actionOnHover: true
+                onClicked: root.pickPc(root.libraryPc === modelData.id ? "" : modelData.id)
+                onActionClicked: root.streamDesktop(modelData)
+              }
             }
           }
         }
@@ -2712,41 +2774,6 @@ Panel {
             }
           }
 
-          // The library's options, as chips like the computers above.
-          Flow {
-            Layout.fillWidth: true
-            visible: root.tab === "library"
-            spacing: Style.space(6)
-
-            FilterChip {
-              icon: "󰄲"
-              label: "Installed"
-              selected: root.installedOnly
-              onClicked: { root.installedOnly = !root.installedOnly; if (root.installedOnly) root.uninstalledOnly = false }
-            }
-
-            FilterChip {
-              icon: "󰔟"
-              label: "Most played"
-              selected: root.mostPlayed
-              onClicked: root.mostPlayed = !root.mostPlayed
-            }
-
-            FilterChip {
-              icon: "󰇚"
-              label: "Uninstalled"
-              selected: root.uninstalledOnly
-              onClicked: { root.uninstalledOnly = !root.uninstalledOnly; if (root.uninstalledOnly) root.installedOnly = false }
-            }
-
-            FilterChip {
-              visible: root.hasStreams
-              icon: "󰕰"
-              label: "Group by computer"
-              selected: root.groupByPc
-              onClicked: root.savePref("groupByPc", !root.groupByPc)
-            }
-          }
         }
 
         Text {

@@ -609,8 +609,10 @@ Panel {
         root.friendsCtlBusy = false
         if (!ok) return
         var v = value || []
-        root.friendGroups = Array.isArray(v) ? [] : v.groups || []
-        root.friends = root.sortFriends(Array.isArray(v) ? v : v.friends || [])
+        root.keepScroll(function() {
+          root.friendGroups = Array.isArray(v) ? [] : v.groups || []
+          root.friends = root.sortFriends(Array.isArray(v) ? v : v.friends || [])
+        })
         root.friendsCached = false
         root.friendsLoaded = true
         root.friendsError = ""
@@ -623,10 +625,26 @@ Panel {
     friendsProc.running = true
   }
 
+  // Replacing the list's rows sends it back to the top. Changes made in
+  // place (minimising a group, a refresh) keep it where it was: the rows
+  // above don't move, so what's below slides under them.
+  function keepScroll(change) {
+    if (tab !== "friends") { change(); return }
+    var y = list.contentY
+    function restore() {
+      if (root.tab === "friends")
+        list.contentY = Math.max(list.originY, Math.min(y, list.originY + list.contentHeight - list.height))
+    }
+    change()
+    restore()
+    // Again once the rows are laid out, in case the view reset after.
+    Qt.callLater(restore)
+  }
+
   function toggleGroup(id) {
     var next = Object.assign({}, collapsedGroups)
     if (next[id]) delete next[id]; else next[id] = true
-    collapsedGroups = next
+    keepScroll(function() { collapsedGroups = next })
     Quickshell.execDetached(["python3", root.script, "set-collapsed", JSON.stringify(Object.keys(next))])
   }
 
@@ -1834,7 +1852,10 @@ Panel {
         try {
           var d = JSON.parse(String(text || "{}"))
           root.friendsError = d.error || ""
-          if (d.friends) { root.friends = d.friends; root.friendGroups = d.groups || []; root.friendsCached = false }
+          if (d.friends) {
+            root.keepScroll(function() { root.friends = d.friends; root.friendGroups = d.groups || [] })
+            root.friendsCached = false
+          }
         } catch (e) {
           root.friendsError = "Couldn't load friends"
         }

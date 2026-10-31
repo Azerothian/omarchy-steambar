@@ -312,6 +312,13 @@ FRIENDS_JS = """
     }
     let presence = ""
     try { presence = f.current_game_rich_presence || "" } catch (e) {}
+    // The game's icon: a full URL, or the hash Steam's community CDN files it under.
+    let gameIcon = ""
+    try {
+      const icon = String(f.current_game_icon_url || "")
+      gameIcon = /^https:\\/\\//.test(icon) ? icon
+        : appid && /^[0-9a-f]{40}$/i.test(icon) ? "https://cdn.fastly.steamstatic.com/steamcommunity/public/images/apps/" + appid + "/" + icon + ".jpg" : ""
+    } catch (e) {}
     const chat = app.ChatStore.GetFriendChat(f.accountid, false)
     const persona = p.m_strPlayerName || ""
     const name = f.display_name || f.m_strNickname || persona || String(f.accountid)
@@ -323,6 +330,8 @@ FRIENDS_JS = """
       avatar: p.m_strAvatarHash ? "https://avatars.fastly.steamstatic.com/" + p.m_strAvatarHash + "_medium.jpg" : "",
       state: inGame && (p.m_ePersonaState || 0) !== 0 ? "in-game" : states[p.m_ePersonaState || 0] || "online",
       game: game,
+      appid: inGame ? appid : 0,
+      gameIcon: inGame ? gameIcon : "",
       presence: presence,
       groups: memberOf[f.accountid] || [],
       lastOnline: p.m_rtLastSeenOnline || 0,

@@ -61,6 +61,33 @@ Panel {
   readonly property bool showSteamNames: pref("showSteamNames", true) !== false
   readonly property bool chatInWindow: pref("chatInWindow", false) === true
   readonly property bool showMessageTimes: pref("showMessageTimes", true) !== false
+  // A group shown as a row of avatars above the friends search ("" for none).
+  readonly property string quickGroup: String(pref("quickGroup", "") || "")
+  readonly property var quickGroupInfo: {
+    for (var i = 0; i < friendGroups.length; i++) if (friendGroups[i].id === quickGroup) return friendGroups[i]
+    return null
+  }
+  readonly property var quickMembers: {
+    if (!quickGroupInfo) return []
+    return friends.filter(function(f) {
+      return (f.groups || []).indexOf(quickGroup) >= 0
+        && (showOfflineFriends || (f.state !== "offline" && f.state !== "unknown"))
+    })
+  }
+
+  // The icon of the game a friend is playing: your library's copy when you
+  // own it, else what Steam reported, else the store's small capsule.
+  function gameIcon(f) {
+    if (!f || f.state !== "in-game" || !f.appid) return ""
+    var g = gameById(f.appid)
+    if (g && g.icon) return g.icon
+    return f.gameIcon || "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/" + f.appid + "/capsule_sm_120.jpg"
+  }
+
+  function chatWith(friend) {
+    if (chatInWindow && controllable) popOutChat(friend)
+    else openChat(friend)
+  }
   // Set by commands that open the popup on a particular tab.
   property bool keepTab: false
 
@@ -909,8 +936,7 @@ Panel {
   function activateRow(item) {
     if (!item) return
     if (root.tab === "friends" && item.isHeader) toggleGroup(item.sectionId)
-    else if (root.tab === "friends" && chatInWindow && controllable) popOutChat(item)
-    else if (root.tab === "friends") openChat(item)
+    else if (root.tab === "friends") chatWith(item)
     else if (root.tab === "store" && !item.owned) openStore(item)
     else if (item.installed) launch("steam://rungameid/" + item.appid)
     else if (downloadsById[item.appid]) toggleDownload(downloadsById[item.appid])
@@ -2130,6 +2156,113 @@ Panel {
           onChanged: function(v) { root.storeKind = v }
         }
 
+        // ---------- icon bar: one group's friends at a glance ----------
+        RowLayout {
+          Layout.fillWidth: true
+          visible: root.tab === "friends" && root.quickMembers.length > 0
+          spacing: Style.space(8)
+
+          Text {
+            Layout.maximumWidth: Style.space(70)
+            text: root.quickGroupInfo ? root.quickGroupInfo.name : ""
+            color: Qt.darker(root.foreground, 1.4)
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            font.letterSpacing: 1
+            font.capitalization: Font.AllUppercase
+            elide: Text.ElideRight
+          }
+
+          ListView {
+            id: quickBar
+            Layout.fillWidth: true
+            Layout.preferredHeight: Style.space(38)
+            orientation: ListView.Horizontal
+            spacing: Style.space(6)
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            model: root.quickMembers
+
+            delegate: Item {
+              id: quick
+              required property var modelData
+              readonly property bool offline: modelData.state === "offline" || modelData.state === "unknown"
+              width: Style.space(34)
+              height: Style.space(38)
+
+              ClippingRectangle {
+                anchors.centerIn: parent
+                width: Style.space(32)
+                height: width
+                radius: Style.space(4)
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                opacity: quick.offline ? 0.4 : 1
+                border.width: quickMouse.containsMouse ? 1 : 0
+                border.color: root.foreground
+
+                Image {
+                  anchors.fill: parent
+                  source: quick.modelData.avatar || ""
+                  sourceSize.width: 64
+                  fillMode: Image.PreserveAspectCrop
+                  asynchronous: true
+                }
+
+                // What they're playing, in the corner.
+                Image {
+                  visible: status === Image.Ready
+                  anchors.left: parent.left
+                  anchors.bottom: parent.bottom
+                  width: Style.space(14)
+                  height: width
+                  source: root.gameIcon(quick.modelData)
+                  sourceSize.width: 32
+                  fillMode: Image.PreserveAspectCrop
+                  asynchronous: true
+                }
+              }
+
+              Rectangle {
+                visible: !quick.offline
+                width: Style.space(9)
+                height: width
+                radius: width / 2
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: Style.space(1)
+                color: root.stateColor(quick.modelData.state)
+                border.width: Style.space(2)
+                border.color: Color.background
+              }
+
+              Rectangle {
+                visible: (quick.modelData.unread || 0) > 0
+                width: Style.space(9)
+                height: width
+                radius: width / 2
+                anchors.right: parent.right
+                anchors.top: parent.top
+                color: root.inGameColor
+                border.width: Style.space(2)
+                border.color: Color.background
+              }
+
+              MouseArea {
+                id: quickMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.chatWith(quick.modelData)
+              }
+
+              ToolTip.visible: quickMouse.containsMouse
+              ToolTip.delay: 300
+              ToolTip.text: quick.modelData.name + " · " + root.friendLine(quick.modelData)
+            }
+          }
+        }
+
         ColumnLayout {
           Layout.fillWidth: true
           visible: root.tab === "library" || root.tab === "friends"
@@ -2588,6 +2721,41 @@ Panel {
               label: "Show the time on each message"
               checked: root.showMessageTimes
               onToggled: root.savePref("showMessageTimes", !root.showMessageTimes)
+            }
+
+            Text {
+              Layout.topMargin: Style.space(4)
+              text: "Icon bar above the friends search"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            SettingsNote {
+              text: root.friendGroups.length
+                ? "One group's friends as a row of avatars, with what they're playing. Click one to chat."
+                : "Needs Steam's debugging port: your friend groups come from the running client."
+            }
+
+            Flow {
+              Layout.fillWidth: true
+              visible: root.friendGroups.length > 0
+              spacing: Style.space(6)
+
+              Repeater {
+                model: [{ id: "", name: "None" }].concat(root.friendGroups)
+
+                Button {
+                  required property var modelData
+                  text: modelData.name
+                  bordered: true
+                  selected: root.quickGroup === modelData.id
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.caption
+                  onClicked: root.savePref("quickGroup", modelData.id)
+                }
+              }
             }
 
             // ----- cache -----
@@ -3789,14 +3957,31 @@ Panel {
               }
             }
 
-            Text {
+            RowLayout {
               Layout.fillWidth: true
-              textFormat: Text.PlainText
-              text: f.friend ? root.friendLine(f.friend) : ""
-              color: f.friend && !f.isOffline ? root.stateColor(f.friend.state) : root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              elide: Text.ElideRight
+              spacing: Style.space(5)
+
+              // The game they're playing, kept to the line's height.
+              Image {
+                id: gameIconImage
+                visible: source != "" && status === Image.Ready
+                Layout.preferredHeight: Style.space(14)
+                Layout.preferredWidth: implicitHeight > 0 ? Style.space(14) * implicitWidth / implicitHeight : 0
+                source: root.gameIcon(f.friend)
+                sourceSize.height: 32
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+              }
+
+              Text {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: f.friend ? root.friendLine(f.friend) : ""
+                color: f.friend && !f.isOffline ? root.stateColor(f.friend.state) : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
             }
           }
 

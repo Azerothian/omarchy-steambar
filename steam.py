@@ -325,6 +325,8 @@ def fetch_status(accountid):
     name = re.search(r'class="persona[^"]*">([^<]*)<', page)
     status = re.search(r'class="friend_status_[\w-]+">([^<]*)<', page)
     game = re.search(r'class="miniprofile_game_name">([^<]*)<', page)
+    logo = re.search(r'class="game_logo" src="(https://[^"]+)"', page)
+    logo_app = re.search(r"/apps/(\d+)/", logo.group(1)) if logo else None
     state = state.group(1)[:32] if state else "offline"
     status_text = html.unescape(status.group(1)).strip() if status else ""
     if state == "online" and re.search(r"away|snooze", status_text, re.I):
@@ -334,6 +336,8 @@ def fetch_status(accountid):
         "name": clip(html.unescape(name.group(1)).strip(), MAX_NAME) if name else "",
         "statusText": clip(status_text, MAX_NAME),
         "game": clip(html.unescape(game.group(1)).strip(), MAX_NAME) if game else "",
+        "gameIcon": clip(html.unescape(logo.group(1)), MAX_URL) if logo else "",
+        "appid": int(logo_app.group(1)) if logo_app else 0,
     }
 
 
@@ -371,6 +375,7 @@ def friends_from_api(key, user):
                 "state": state,
                 "statusText": {"in-game": "In-Game", "offline": "Offline", "away": "Away", "busy": "Busy"}.get(state, "Online"),
                 "game": clip(p.get("gameextrainfo"), MAX_NAME),
+                "appid": int(p["gameid"]) if str(p.get("gameid", "")).isdigit() and int(p["gameid"]) < 2 ** 32 else 0,
                 "lastOnline": p.get("lastlogoff", 0) if isinstance(p.get("lastlogoff"), int) else 0,
             })
     return people
@@ -434,6 +439,8 @@ def friends_from_community(user):
         p["state"] = s.get("state", "unknown")
         p["statusText"] = s.get("statusText", "")
         p["game"] = s.get("game", "")
+        p["gameIcon"] = s.get("gameIcon", "")
+        p["appid"] = s.get("appid", 0)
         if s.get("name"):
             p["name"] = s["name"]
         if nicknames.get(p["accountid"]):

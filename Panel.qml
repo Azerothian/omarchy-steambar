@@ -5117,6 +5117,9 @@ Panel {
     property bool popout: false
     readonly property bool isStore: !!card && card.type === "store"
     readonly property bool isImage: !!card && card.type === "image"
+    readonly property bool isLink: !!card && card.type === "link"
+    // A link's site, as its label (discord.com).
+    readonly property string site: isLink ? String(card.url).replace(/^https?:\/\/(www\.)?/, "").split(/[\/?#]/)[0] : ""
     // An image is just its thumbnail, unless it fails to load.
     readonly property bool showInfo: !isImage || art.status === Image.Error
     readonly property var game: card ? root.gameById(card.appid) : null
@@ -5136,9 +5139,10 @@ Panel {
     Image {
       id: art
       width: parent.width
-      // Store headers are 460x215; Workshop previews are cropped to 16:9;
-      // images keep their shape (very tall ones are cropped).
-      height: status === Image.Error || source == "" ? 0 : width * (cc.isStore ? 215 / 460
+      // Store headers are 460x215; Workshop previews are cropped to 16:9 and
+      // link previews to their usual 1.91:1; images keep their shape (very
+      // tall ones are cropped).
+      height: status === Image.Error || source == "" ? 0 : width * (cc.isStore ? 215 / 460 : cc.isLink ? 630 / 1200
         : cc.isImage && cc.card.width > 0 && cc.card.height > 0 ? Math.min(cc.card.height / cc.card.width, 1.25) : 9 / 16)
       source: !cc.card ? "" : cc.isImage ? cc.card.thumb : cc.isStore
         ? (cc.game && cc.game.header ? cc.game.header : cc.card.header
@@ -5160,7 +5164,7 @@ Panel {
       Text {
         width: parent.width
         textFormat: Text.PlainText
-        text: cc.isImage ? "IMAGE" : cc.isStore ? (cc.game ? "STEAM STORE · IN YOUR LIBRARY" : "STEAM STORE")
+        text: cc.isImage ? "IMAGE" : cc.isLink ? cc.site.toUpperCase() : cc.isStore ? (cc.game ? "STEAM STORE · IN YOUR LIBRARY" : "STEAM STORE")
           : "WORKSHOP" + (cc.game ? " · " + cc.game.name.toUpperCase() : "")
         color: root.dim
         font.family: root.fontFamily
@@ -5174,6 +5178,7 @@ Panel {
         width: parent.width
         textFormat: Text.PlainText
         text: !cc.card ? "" : cc.isImage ? "Couldn't load the preview. Click to open it."
+          : cc.isLink ? cc.card.title || cc.card.url
           : cc.isStore ? (cc.game ? cc.game.name : cc.card.name || "App " + cc.card.appid)
           : cc.card.title || "Workshop item"
         color: root.foreground
@@ -5187,7 +5192,7 @@ Panel {
 
       Text {
         width: parent.width
-        visible: !cc.isStore && !!cc.card && !!cc.card.description
+        visible: !cc.isStore && !cc.isImage && !!cc.card && !!cc.card.description
         textFormat: Text.PlainText
         text: cc.card && cc.card.description ? cc.card.description : ""
         color: root.dim
@@ -5200,7 +5205,7 @@ Panel {
 
       Text {
         width: parent.width
-        visible: !cc.isStore && !!cc.card && (cc.card.votesUp + cc.card.votesDown > 0 || cc.card.comments > 0)
+        visible: !!cc.card && cc.card.type === "workshop" && (cc.card.votesUp + cc.card.votesDown > 0 || cc.card.comments > 0)
         textFormat: Text.PlainText
         text: {
           if (!cc.card || cc.isStore) return ""

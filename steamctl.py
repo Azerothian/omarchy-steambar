@@ -508,7 +508,16 @@ EMBEDS_JS = r"""(s => {
       cards.push({ type: "youtube", id: id, url: "https://www.youtube.com/watch?v=" + id })
       return ""
     })
-  // Any other Steam tag ([og], [roomeffect], ...) becomes a card
+  // Link previews: [og url=... img=... title=... desc=...]url[/og].
+  const previewed = media.replace(/\[og(\s[^\]]*)?\]([\s\S]*?)\[\/og\]/gi, (all, a, body) => {
+    const url = attr(a, "url") || body.trim()
+    if (!/^https?:\/\//.test(url)) return all
+    const img = attr(a, "img")
+    cards.push({ type: "link", url: url, title: attr(a, "title"), description: attr(a, "desc"),
+      preview: /^https:\/\//.test(img) ? img : "" })
+    return ""
+  })
+  // Any other Steam tag ([roomeffect], ...) becomes a card
   // listing what it carries, with the original to copy. Plain bracketed
   // text like [brb] has no closing tag or fields, so it stays as typed.
   const RENDERED = /^(url|b|i|u|emoticon|sticker)$/i
@@ -529,7 +538,7 @@ EMBEDS_JS = r"""(s => {
       raw: all.slice(0, 20000) })
     return ""
   }
-  const tagged = media
+  const tagged = previewed
     .replace(/\[([a-z][a-z0-9_]*)((?:=|\s)[^\]]*)?\]([\s\S]*?)\[\/\1\]/gi, tagCard)
     .replace(/\[([a-z][a-z0-9_]*)(\s+[a-z_][a-z0-9_]*=[^\]]*)\]/gi, (all, tag, a) => tagCard(all, tag, a, ""))
   return { rest: tagged, cards: cards }

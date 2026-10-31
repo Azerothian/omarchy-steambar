@@ -187,7 +187,26 @@ Panel {
   readonly property bool groupByPc: pref("groupByPc", true) !== false
   readonly property bool hasStreams: remoteDevices.length > 0 && Object.keys(remoteApps).length > 0
 
-  readonly property var libraryGames: {
+  // Remote Play heads the library like a friend group: a header that
+  // minimises, then a row per computer (click for its desktop).
+  readonly property var remotePlayRows: {
+    if (!remoteDevices.length) return []
+    var collapsed = !!collapsedGroups.remoteplay
+    var out = [{ isHeader: true, sectionId: "remoteplay", name: "Remote Play", count: remoteDevices.length,
+                 collapsible: true, collapsed: collapsed, first: true }]
+    if (!collapsed) remoteDevices.forEach(function(d) {
+      out.push({ isDevice: true, device: d, count: games.filter(function(g) {
+        return (remoteApps[String(g.appid)] || []).indexOf(d.id) >= 0 }).length })
+    })
+    return out
+  }
+
+  // Under Remote Play, an ungrouped list gets a header of its own.
+  readonly property var libraryGames: !remotePlayRows.length || !libraryList.length || libraryList[0].isHeader
+    ? remotePlayRows.concat(libraryList)
+    : remotePlayRows.concat([{ isHeader: true, sectionId: "games", name: "Games", count: libraryList.length }], libraryList)
+
+  readonly property var libraryList: {
     var q = filterText.trim().toLowerCase()
     function keep(g, here) {
       if (q !== "" && g.name.toLowerCase().indexOf(q) < 0) return false
@@ -215,7 +234,8 @@ Panel {
       var out = []
       sections.forEach(function(sec) {
         if (!sec.list.length || (only !== "" && only !== sec.id)) return
-        out.push({ isHeader: true, name: sec.name, count: sec.list.length, sectionId: sec.id, first: out.length === 0 })
+        out.push({ isHeader: true, name: sec.name, count: sec.list.length, sectionId: sec.id,
+                   first: out.length === 0 && !remoteDevices.length })
         out = out.concat(sec.list.sort(byName))
       })
       return out
@@ -871,10 +891,10 @@ Panel {
   // place (minimising a group, a refresh) keep it where it was: the rows
   // above don't move, so what's below slides under them.
   function keepScroll(change) {
-    if (tab !== "friends") { change(); return }
+    if (tab !== "friends" && tab !== "library") { change(); return }
     var y = list.contentY
     function restore() {
-      if (root.tab === "friends")
+      if (root.tab === "friends" || root.tab === "library")
         list.contentY = Math.max(list.originY, Math.min(y, list.originY + list.contentHeight - list.height))
     }
     change()
@@ -1255,7 +1275,8 @@ Panel {
     else if (root.tab === "friends") chatWith(item)
     else if (root.tab === "groups") chatWithGroup(item)
     else if (root.tab === "store" && !item.owned) openStore(item)
-    else if (item.isHeader) return
+    else if (item.isHeader) { if (item.collapsible) toggleGroup(item.sectionId) }
+    else if (item.isDevice) streamDesktop(item.device)
     else if (item.streamDevice) streamGame(item, item.streamDevice)
     else if (item.installed) launch("steam://rungameid/" + item.appid)
     else if (streamable(item)) streamGame(item, streamDevices(item)[0])
@@ -2517,123 +2538,6 @@ Panel {
           onChanged: function(v) { root.storeKind = v }
         }
 
-        // ---------- Remote Play: your other computers, like the friends bar ----------
-        ColumnLayout {
-          Layout.fillWidth: true
-          visible: root.tab === "library" && root.remoteDevices.length > 0
-          spacing: Style.space(4)
-
-          // Minimises and expands like a friend group's header (remembered
-          // with them).
-          Rectangle {
-            Layout.fillWidth: true
-            implicitHeight: Style.space(24)
-            radius: Style.space(4)
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, remoteHeaderMouse.containsMouse ? 0.06 : 0)
-
-            Text {
-              anchors.fill: parent
-              anchors.leftMargin: Style.space(6)
-              verticalAlignment: Text.AlignVCenter
-              textFormat: Text.PlainText
-              text: (root.collapsedGroups.remoteplay ? "󰅂 " : "󰅀 ") + "REMOTE PLAY  " + root.remoteDevices.length
-              color: Qt.darker(root.foreground, 1.4)
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              font.letterSpacing: 1.2
-            }
-
-            MouseArea {
-              id: remoteHeaderMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.toggleGroup("remoteplay")
-            }
-          }
-
-          Row {
-            visible: !root.collapsedGroups.remoteplay
-            leftPadding: Style.space(6)
-            spacing: Style.space(22)
-
-            Repeater {
-              model: root.remoteDevices
-
-              // A computer: click to Remote Play its desktop.
-              Item {
-                id: pc
-                required property var modelData
-                width: Style.space(64)
-                height: pcCol.implicitHeight
-
-                Column {
-                id: pcCol
-                width: parent.width
-                spacing: Style.space(2)
-
-                Rectangle {
-                  anchors.horizontalCenter: parent.horizontalCenter
-                  width: Style.space(32)
-                  height: width
-                  radius: Style.space(4)
-                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, pcMouse.containsMouse ? 0.16 : 0.08)
-                  border.width: pcMouse.containsMouse ? 1 : 0
-                  border.color: root.foreground
-
-                  Text {
-                    anchors.centerIn: parent
-                    text: pcMouse.containsMouse ? "󰐊" : "󰍹"
-                    color: pcMouse.containsMouse ? root.onlineColor : root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.body
-                  }
-
-                  // Online (only computers Steam can reach are listed).
-                  Rectangle {
-                    width: Style.space(9)
-                    height: width
-                    radius: width / 2
-                    anchors.right: parent.right
-                    anchors.bottom: parent.bottom
-                    anchors.rightMargin: -Style.space(2)
-                    anchors.bottomMargin: -Style.space(2)
-                    color: root.onlineColor
-                    border.width: Style.space(2)
-                    border.color: Color.background
-                  }
-                }
-
-                Text {
-                  width: parent.width
-                  horizontalAlignment: Text.AlignHCenter
-                  text: pc.modelData.name
-                  color: pcMouse.containsMouse ? root.foreground : root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                }
-
-                }
-
-                MouseArea {
-                  id: pcMouse
-                  // Over the whole tile, icon and name.
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.streamDesktop(pc.modelData)
-                }
-
-                ToolTip.visible: pcMouse.containsMouse
-                ToolTip.delay: 300
-                ToolTip.text: "Remote Play " + pc.modelData.name + "'s desktop"
-              }
-            }
-          }
-        }
-
         // ---------- library filters: one line of chips ----------
         // The options as icons (names on hover), then, with other computers
         // to stream from, a chip per computer: click to show only its games
@@ -3369,7 +3273,8 @@ Panel {
             // Leave a gutter for the scrollbar so it doesn't sit on the row's buttons.
             width: list.width - (list.contentHeight > list.height ? listBar.width + Style.space(2) : 0)
             sourceComponent: root.tab === "friends" ? friendRow : root.tab === "groups" ? groupRow : root.tab === "recent" ? recentRow
-              : root.tab === "store" ? storeRow : modelData && modelData.isHeader ? libraryHeader : libraryRow
+              : root.tab === "store" ? storeRow : modelData && modelData.isHeader ? libraryHeader
+              : modelData && modelData.isDevice ? deviceRow : libraryRow
             property var entry: modelData
             property int rowIdx: index
           }
@@ -4182,30 +4087,127 @@ Panel {
     }
   }
 
-  // A computer's section in the library when it's grouped by computer.
+  // A section header in the library: Remote Play (which minimises, like a
+  // friend group) or a computer's games when grouped by computer.
   Component {
     id: libraryHeader
     Item {
+      id: lh
       readonly property var entry: parent ? parent.entry : null
+      readonly property int entryIdx: parent ? parent.rowIdx : 0
       width: parent ? parent.width : 0
-      implicitHeight: Style.space(24) + (entry && entry.first ? 0 : Style.space(8))
+      implicitHeight: headerSurface.height + (entry && entry.first ? 0 : Style.space(6))
 
-      Text {
-        anchors.left: parent.left
-        anchors.right: parent.right
+      RowSurface {
+        id: headerSurface
         anchors.bottom: parent.bottom
-        height: Style.space(24)
-        leftPadding: Style.space(6)
-        verticalAlignment: Text.AlignVCenter
-        textFormat: Text.PlainText
-        text: !parent.entry ? "" : (parent.entry.sectionId === "local" ? "󰌢  " : parent.entry.sectionId === "none" ? "" : "󰍹  ")
-          + parent.entry.name.toUpperCase() + "  " + parent.entry.count
-        color: Qt.darker(root.foreground, 1.4)
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        font.bold: true
-        font.letterSpacing: 1.2
-        elide: Text.ElideRight
+        rowIdx: lh.entryIdx
+        implicitHeight: Style.space(24)
+
+        Text {
+          anchors.fill: parent
+          anchors.leftMargin: Style.space(6)
+          anchors.rightMargin: Style.space(8)
+          verticalAlignment: Text.AlignVCenter
+          textFormat: Text.PlainText
+          text: !lh.entry ? ""
+            : (lh.entry.collapsible ? (lh.entry.collapsed ? "󰅂 " : "󰅀 ")
+              : lh.entry.sectionId === "local" ? "󰌢  " : lh.entry.sectionId === "none" || lh.entry.sectionId === "games" ? "" : "󰍹  ")
+              + lh.entry.name.toUpperCase() + "  " + lh.entry.count
+          color: Qt.darker(root.foreground, 1.4)
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 1.2
+          elide: Text.ElideRight
+        }
+      }
+    }
+  }
+
+  // A Remote Play computer, like a friend: icon with an online dot, name,
+  // and how many of your games it can stream. Click for its desktop.
+  Component {
+    id: deviceRow
+    RowSurface {
+      id: dr
+      readonly property var entry: parent ? parent.entry : null
+      rowIdx: parent ? parent.rowIdx : 0
+      implicitHeight: Style.space(44)
+
+      RowLayout {
+        anchors.fill: parent
+        anchors.leftMargin: Style.space(6)
+        anchors.rightMargin: Style.space(8)
+        spacing: Style.space(10)
+
+        Item {
+          Layout.preferredWidth: Style.space(32)
+          Layout.preferredHeight: Style.space(32)
+
+          Rectangle {
+            anchors.fill: parent
+            radius: Style.space(4)
+            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+
+            Text {
+              anchors.centerIn: parent
+              text: "󰍹"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+            }
+          }
+
+          Rectangle {
+            width: Style.space(10)
+            height: width
+            radius: width / 2
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.rightMargin: -Style.space(2)
+            anchors.bottomMargin: -Style.space(2)
+            color: root.onlineColor
+            border.width: Style.space(2)
+            border.color: Color.background
+          }
+        }
+
+        ColumnLayout {
+          Layout.fillWidth: true
+          spacing: Style.space(1)
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: dr.entry ? dr.entry.device.name : ""
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.bold: true
+            elide: Text.ElideRight
+          }
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: dr.entry ? "Online · " + dr.entry.count + " games to stream" : ""
+            color: root.onlineColor
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+        }
+
+        PanelActionButton {
+          visible: dr.hasCursor
+          iconText: "󰐊"
+          tooltipText: dr.entry ? "Remote Play " + dr.entry.device.name + "'s desktop" : ""
+          foreground: root.onlineColor
+          fontFamily: root.fontFamily
+          fontSize: Style.font.bodySmall
+          onClicked: if (dr.entry) root.streamDesktop(dr.entry.device)
+        }
       }
     }
   }

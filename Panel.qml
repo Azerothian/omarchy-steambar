@@ -1309,7 +1309,7 @@ Panel {
         }
 
         // Drag to pan and the wheel scrolls; shift + wheel zooms at the
-        // mouse, and a click zooms in there (or back out to fit).
+        // mouse, and clicks step the zoom by 10% there.
         Flickable {
           id: flick
           anchors.left: parent.left
@@ -1352,14 +1352,15 @@ Panel {
             }
           }
 
+          // Click zooms in to the next 10% at the mouse, right-click out.
           TapHandler {
             enabled: full.status === Image.Ready
-            onTapped: function(eventPoint) {
-              // In to actual size (2x when it already fits at that), out to fit.
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            onTapped: function(eventPoint, button) {
               var p = eventPoint.position
-              var closeUp = viewer.fitZoom >= 1 ? 2 : 1
-              if (viewer.zoom < closeUp - 0.001) viewer.zoomAt(closeUp, p.x, p.y)
-              else viewer.zoomAt(Math.min(1, viewer.fitZoom), p.x, p.y)
+              var percent = Math.round(viewer.zoom * 1000) / 10
+              var next = button === Qt.RightButton ? Math.ceil(percent / 10) * 10 - 10 : Math.floor(percent / 10) * 10 + 10
+              viewer.zoomAt(Math.max(10, next) / 100, p.x, p.y)
             }
           }
         }

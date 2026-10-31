@@ -2074,6 +2074,17 @@ Panel {
           }
         }
 
+        // With the tabs across the top, a line sets the header apart from
+        // what's under it, as the rail's edge does on the left.
+        Rectangle {
+          Layout.fillWidth: true
+          Layout.topMargin: -Style.space(4)
+          Layout.bottomMargin: Style.space(2)
+          visible: root.railTop
+          implicitHeight: 1
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+        }
+
         DebugNotice {
           Layout.fillWidth: true
           visible: root.degraded && root.degradedOpen && root.tab !== "settings"

@@ -46,8 +46,28 @@ def find_steam():
 
 
 STEAM = find_steam()
-CACHE = os.path.expanduser("~/.cache/blip-steam")
+CACHE = cache.CACHE
 STEAMID64_BASE = 76561197960265728
+
+
+# ---------- cached files ----------
+def read_json(path, max_age=None):
+    """A JSON file's contents, or None if it's missing, unreadable or older than max_age seconds."""
+    try:
+        if max_age is not None and time.time() - os.path.getmtime(path) > max_age:
+            return None
+        with open(path) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def write_json(path, data):
+    """Write atomically (to a temporary file, then rename)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w") as f:
+        json.dump(data, f)
+    os.replace(path + ".tmp", path)
 
 
 # ---------- network ----------
@@ -144,7 +164,20 @@ def ci(d, key):
 
 # ---------- binary appinfo.vdf ----------
 def read_appinfo():
+    """{appid: {name, type}} from appinfo.vdf. Parsing it takes ~0.5 s, so the
+    result is kept until Steam rewrites the file (its size or time changes)."""
     path = os.path.join(STEAM, "appcache", "appinfo.vdf")
+    st = os.stat(path)
+    stamp = "%d:%d" % (st.st_mtime_ns, st.st_size)
+    saved = read_json(os.path.join(CACHE, "appinfo.json"))
+    if isinstance(saved, dict) and saved.get("stamp") == stamp and isinstance(saved.get("apps"), dict):
+        return {int(k): v for k, v in saved["apps"].items()}
+    apps = parse_appinfo(path)
+    write_json(os.path.join(CACHE, "appinfo.json"), {"stamp": stamp, "apps": apps})
+    return apps
+
+
+def parse_appinfo(path):
     with open(path, "rb") as f:
         d = f.read()
     magic, _ = struct.unpack_from("<II", d, 0)
@@ -236,10 +269,10 @@ def localconfig(user):
 
 # ---------- images ----------
 def art_for(appid):
-    """Header (wide capsule) and icon images, local from Steam's library cache
-    when it has them, else the store CDN."""
+    """Header (wide capsule), icon and portrait cover (600x900) images, local
+    from Steam's library cache when it has them, else the store CDN."""
     base = os.path.join(STEAM, "appcache", "librarycache", str(appid))
-    header = icon = ""
+    header = icon = portrait = ""
     try:
         for entry in os.scandir(base):
             if entry.is_dir():
@@ -247,42 +280,25 @@ def art_for(appid):
                     h = os.path.join(entry.path, name)
                     if not header and os.path.exists(h):
                         header = h
+                p = os.path.join(entry.path, "library_600x900.jpg")
+                if not portrait and os.path.exists(p):
+                    portrait = p
             elif entry.name == "header.jpg":
                 header = entry.path
+            elif entry.name == "library_600x900.jpg":
+                portrait = entry.path
             elif re.fullmatch(r"[0-9a-f]{40}\.jpg", entry.name):
                 icon = entry.path  # top-level <sha1>.jpg is the small app icon
     except OSError:
         pass
-    if not header:
-        header = "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/%d/header.jpg" % appid
-    return header, icon
-
-
-def portrait_for(appid):
-    """The game's portrait cover (600x900, as Steam's library grid shows it),
-    local from the library cache when it has it, else the store CDN."""
-    base = os.path.join(STEAM, "appcache", "librarycache", str(appid))
-    try:
-        for entry in os.scandir(base):
-            if entry.is_dir():
-                p = os.path.join(entry.path, "library_600x900.jpg")
-                if os.path.exists(p):
-                    return p
-            elif entry.name == "library_600x900.jpg":
-                return entry.path
-    except OSError:
-        pass
-    return "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/%d/library_600x900.jpg" % appid
+    cdn = "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/%d/" % appid
+    return header or cdn + "header.jpg", icon, portrait or cdn + "library_600x900.jpg"
 
 
 # ---------- games ----------
 def installed_apps():
     out = set()
-    folders = ci(read_vdf(os.path.join(STEAM, "steamapps", "libraryfolders.vdf")), "libraryfolders")
-    paths = [STEAM] + [ci(v, "path") for v in folders.values() if isinstance(v, dict)]
-    for p in paths:
-        if not isinstance(p, str) or not p:
-            continue
+    for p in library_paths():
         try:
             for name in os.listdir(os.path.join(p, "steamapps")):
                 m = re.match(r"appmanifest_(\d+)\.acf$", name)
@@ -318,7 +334,7 @@ def games():
         if not meta or meta["type"] != "game" or not meta["name"]:
             continue
         lp, pt = played.get(aid, (0, 0))
-        header, icon = art_for(aid)
+        header, icon, portrait = art_for(aid)
         out.append({
             "appid": aid,
             "name": meta["name"],
@@ -327,7 +343,7 @@ def games():
             "installed": aid in installed,
             "header": header,
             "icon": icon,
-            "portrait": portrait_for(aid),
+            "portrait": portrait,
         })
     out.sort(key=lambda g: (-g["lastPlayed"], g["name"].lower()))
     return {"user": user, "games": out}
@@ -655,7 +671,7 @@ def downloads():
             if info is None:
                 info = read_appinfo()
             meta = info.get(aid, {})
-            header, icon = art_for(aid)
+            header, icon, _ = art_for(aid)
             out.append({
                 "appid": aid,
                 "name": ci(manifest, "name") or meta.get("name") or str(aid),
@@ -708,13 +724,8 @@ def store_list(kind):
     DLC are skipped. Both endpoints are public. Cached for an hour, and the
     last good copy is used when Steam can't be reached."""
     query = STORE_LISTS[kind]
-    os.makedirs(CACHE, exist_ok=True)
     cache_path = os.path.join(CACHE, "store-%s.json" % kind)
-    try:
-        with open(cache_path) as f:
-            cached = json.load(f)
-    except (OSError, ValueError):
-        cached = None
+    cached = read_json(cache_path)
     if cached and time.time() - cached.get("time", 0) < LIST_MAX_AGE:
         return cached
 
@@ -773,10 +784,7 @@ def store_list(kind):
         if len(out) >= LIST_COUNT:
             break
     result = {"games": out, "time": time.time()}
-    tmp = cache_path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(result, f)
-    os.replace(tmp, cache_path)
+    write_json(cache_path, result)
     return result
 
 
@@ -795,17 +803,12 @@ DECK = {1: "Unsupported", 2: "Playable", 3: "Verified"}
 def tag_names():
     """Steam's tag id -> name table, cached for a week."""
     path = os.path.join(CACHE, "tags.json")
-    try:
-        if time.time() - os.path.getmtime(path) < 7 * 86400:
-            with open(path) as f:
-                return {int(k): v for k, v in json.load(f).items()}
-    except (OSError, ValueError):
-        pass
+    saved = read_json(path, 7 * 86400)
+    if isinstance(saved, dict):
+        return {int(k): v for k, v in saved.items()}
     tags = {t["tagid"]: clip(t.get("name"), 64) for t in seq(api_get("IStoreService/GetTagList/v1/", language="english")
             .get("response", {}).get("tags"), 5000) if isinstance(t, dict) and isinstance(t.get("tagid"), int)}
-    with open(path + ".tmp", "w") as f:
-        json.dump(tags, f)
-    os.replace(path + ".tmp", path)
+    write_json(path, tags)
     return tags
 
 
@@ -925,12 +928,9 @@ def store_page(appid):
     folder = os.path.join(CACHE, "store")
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, "%d.json" % appid)
-    try:
-        if time.time() - os.path.getmtime(path) < STORE_MAX_AGE:
-            with open(path) as f:
-                return json.load(f)
-    except (OSError, ValueError):
-        pass
+    saved = read_json(path, STORE_MAX_AGE)
+    if saved is not None:
+        return saved
 
     from concurrent.futures import ThreadPoolExecutor
     request = {
@@ -1037,9 +1037,7 @@ def store_page(appid):
         "minimum": styled(clip(reqs.get("minimum"), MAX_TEXT)),
         "recommended": styled(clip(reqs.get("recommended"), MAX_TEXT)),
     }
-    with open(path + ".tmp", "w") as f:
-        json.dump(result, f)
-    os.replace(path + ".tmp", path)
+    write_json(path, result)
     return result
 
 

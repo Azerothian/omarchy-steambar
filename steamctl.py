@@ -290,10 +290,49 @@ INSTALL_JS = """
 """
 
 
+# A Steam player (a friend, a group member, a chat sender) as the widget shows
+# them: name, avatar, presence, and the game they're in with its icon.
+PERSONA_JS = r"""(() => {
+  const states = ["offline", "online", "busy", "away", "away", "online", "online"]
+  const avatar = hash => hash && !/^0+$/.test(hash) ? "https://avatars.fastly.steamstatic.com/" + hash + "_medium.jpg" : ""
+  const of = f => {
+    const p = f.m_persona || {}
+    const appid = p.m_unGamePlayedAppID || 0
+    const inGame = (appid > 0 || (p.m_gameid && p.m_gameid !== "0")) && (p.m_ePersonaState || 0) !== 0
+    let game = "", gameIcon = ""
+    if (inGame) {
+      game = p.m_strGameExtraInfo || f.current_game_name || ""
+      if (!game && appid) {
+        try { game = (g_FriendsUIApp.AppInfoStore.GetAppInfo(appid) || {}).name || "" } catch (e) {}
+      }
+      // A full URL, or the hash Steam's community CDN files the icon under.
+      try {
+        const icon = String(f.current_game_icon_url || "")
+        gameIcon = /^https:\/\//.test(icon) ? icon
+          : appid && /^[0-9a-f]{40}$/i.test(icon) ? "https://cdn.fastly.steamstatic.com/steamcommunity/public/images/apps/" + appid + "/" + icon + ".jpg" : ""
+      } catch (e) {}
+    }
+    const persona = p.m_strPlayerName || ""
+    const name = f.display_name || f.m_strNickname || persona || String(f.accountid)
+    return {
+      accountid: String(f.accountid),
+      steamid: String(f.steamid64 || (p.m_steamid && p.m_steamid.ConvertTo64BitString ? p.m_steamid.ConvertTo64BitString() : "")),
+      name: name,
+      personaName: persona && persona !== name ? persona : "",
+      avatar: avatar(p.m_strAvatarHash),
+      state: inGame ? "in-game" : states[p.m_ePersonaState || 0] || "online",
+      game: game,
+      appid: inGame ? appid : 0,
+      gameIcon: gameIcon,
+    }
+  }
+  return { of: of }
+})()"""
+
 FRIENDS_JS = """
 (() => {
   const app = g_FriendsUIApp
-  const states = ["offline", "online", "busy", "away", "away", "online", "online"]
+  const persona = %(persona)s
   // The user's own friend groups (Steam's categories) and favorites, as the
   // client's friend list shows them.
   const store = app.FriendStore.FriendGroupStore
@@ -309,41 +348,14 @@ FRIENDS_JS = """
   for (const g of groups) for (const a of g.members) (memberOf[a] = memberOf[a] || []).push(g.id)
   for (const a of favorites) (memberOf[a] = memberOf[a] || []).unshift("favorites")
   const friends = Array.from(app.FriendStore.all_friends || []).map(f => {
-    const p = f.m_persona || {}
-    const appid = p.m_unGamePlayedAppID || 0
-    const inGame = appid > 0 || (p.m_gameid && p.m_gameid !== "0")
-    let game = p.m_strGameExtraInfo || f.current_game_name || ""
-    if (!game && appid) {
-      try { game = (app.AppInfoStore.GetAppInfo(appid) || {}).name || "" } catch (e) {}
-    }
     let presence = ""
     try { presence = f.current_game_rich_presence || "" } catch (e) {}
-    // The game's icon: a full URL, or the hash Steam's community CDN files it under.
-    let gameIcon = ""
-    try {
-      const icon = String(f.current_game_icon_url || "")
-      gameIcon = /^https:\\/\\//.test(icon) ? icon
-        : appid && /^[0-9a-f]{40}$/i.test(icon) ? "https://cdn.fastly.steamstatic.com/steamcommunity/public/images/apps/" + appid + "/" + icon + ".jpg" : ""
-    } catch (e) {}
     const chat = app.ChatStore.GetFriendChat(f.accountid, false)
-    const persona = p.m_strPlayerName || ""
-    const name = f.display_name || f.m_strNickname || persona || String(f.accountid)
-    return {
-      accountid: String(f.accountid),
-      steamid: String(p.m_steamid && p.m_steamid.ConvertTo64BitString ? p.m_steamid.ConvertTo64BitString() : ""),
-      name: name,
-      personaName: persona && persona !== name ? persona : "",
-      avatar: p.m_strAvatarHash ? "https://avatars.fastly.steamstatic.com/" + p.m_strAvatarHash + "_medium.jpg" : "",
-      state: inGame && (p.m_ePersonaState || 0) !== 0 ? "in-game" : states[p.m_ePersonaState || 0] || "online",
-      game: game,
-      appid: inGame ? appid : 0,
-      gameIcon: inGame ? gameIcon : "",
+    return Object.assign(persona.of(f), {
       presence: presence,
       groups: memberOf[f.accountid] || [],
-      lastOnline: p.m_rtLastSeenOnline || 0,
       unread: chat ? chat.unread_message_count || 0 : 0,
-      lastMessage: chat ? chat.time_last_message || 0 : 0,
-    }
+    })
   })
   return {
     friends: friends,
@@ -373,17 +385,13 @@ CHAT_JS = """
   const html = %(html)s
   const embeds = %(embeds)s
   // Who wrote each message: group chats show the sender's name.
+  const persona = %(persona)s
   const senders = {}
   const sender = id => {
     if (!senders[id]) {
-      let name = String(id), avatar = ""
-      try {
-        const p = g_FriendsUIApp.FriendStore.GetPlayer(id)
-        name = p.display_name || (p.persona && p.persona.m_strPlayerName) || name
-        const hash = p.persona && p.persona.m_strAvatarHash
-        if (hash && !/^0+$/.test(hash)) avatar = "https://avatars.fastly.steamstatic.com/" + hash + "_medium.jpg"
-      } catch (e) {}
-      senders[id] = { name: name, avatar: avatar }
+      let who = { name: String(id), avatar: "" }
+      try { who = persona.of(g_FriendsUIApp.FriendStore.GetPlayer(id)) } catch (e) {}
+      senders[id] = who
     }
     return senders[id]
   }
@@ -590,22 +598,6 @@ REMOTE_JS = """
 })()
 """
 
-# Stream a game from another computer: what Steam's Stream button does.
-STREAM_JS = """
-(() => {
-  SteamClient.Apps.StreamGame(%(appid)d, "%(client)s", -1)
-  return "streaming"
-})()
-"""
-
-# Remote Play the other computer's whole desktop, as Steam's device list does.
-DESKTOP_JS = """
-(() => {
-  SteamClient.RemotePlay.StartDesktopStream("%(client)s")
-  return "streaming"
-})()
-"""
-
 # Your group chats (named groups, Steam group chats and ad-hoc chats with
 # several friends), most recently active first, with their text rooms.
 GROUPS_JS = """
@@ -653,29 +645,10 @@ MEMBERS_JS = """
   cs.IncRefActiveChatRoomGroup(id, true)
   try {
     for (let i = 0; i < 20 && !g.m_bFullStateLoaded; i++) await new Promise(r => setTimeout(r, 250))
-    const states = ["offline", "online", "busy", "away", "away", "online", "online"]
+    const persona = %(persona)s
     const rank = { "in-game": 0, online: 1, busy: 2, away: 2, offline: 3 }
     return Array.from((g.memberList && g.memberList.member_list) || []).map(f => {
-      const p = f.m_persona || {}
-      const appid = p.m_unGamePlayedAppID || 0
-      const inGame = (appid > 0 || (p.m_gameid && p.m_gameid !== "0")) && (p.m_ePersonaState || 0) !== 0
-      let gameIcon = ""
-      try {
-        const icon = String(f.current_game_icon_url || "")
-        gameIcon = /^https:\\/\\//.test(icon) ? icon : ""
-      } catch (e) {}
-      const hash = p.m_strAvatarHash
-      return {
-        accountid: String(f.accountid),
-        steamid: String(f.steamid64 || ""),
-        name: f.display_name || p.m_strPlayerName || String(f.accountid),
-        avatar: hash && !/^0+$/.test(hash) ? "https://avatars.fastly.steamstatic.com/" + hash + "_medium.jpg" : "",
-        state: inGame ? "in-game" : states[p.m_ePersonaState || 0] || "online",
-        game: inGame ? (p.m_strGameExtraInfo || f.current_game_name || "") : "",
-        appid: inGame ? appid : 0,
-        gameIcon: inGame ? gameIcon : "",
-        isFriend: !!f.is_friend,
-      }
+      return Object.assign(persona.of(f), { isFriend: !!f.is_friend })
     }).sort((a, b) => (rank[a.state] - rank[b.state]) || a.name.toLowerCase().localeCompare(b.name.toLowerCase()))
   } finally {
     cs.DecRefActiveChatRoomGroup(id, true)
@@ -704,56 +677,66 @@ SEND_JS = """
 """
 
 
+def cached_lookup(table, key, fetch):
+    """Details for a shared link, from the cache when it has them (a month;
+    a failed lookup is retried after an hour), else fetch(), then kept."""
+    info, age = cache.load_lookup(table, key)
+    if info is not None and age < (30 * 86400 if info else 3600):
+        return info
+    try:
+        info = fetch()
+    except Exception:
+        info = {}
+    cache.save_lookup(table, key, info)
+    return info
+
+
+def fetch_small_json(url):
+    with urllib.request.urlopen(url, timeout=4) as r:
+        body = r.read(MAX_APPINFO + 1)
+    return json.loads(body) if len(body) <= MAX_APPINFO else {}
+
+
 def store_app(appid):
     """Name and header art for a shared store link. Newer games keep their
-    art under a hashed path only the store's API knows, so ask it once and
-    keep the answer (a failed lookup is retried after an hour)."""
+    art under a hashed path only the store's API knows, so ask it once."""
     if not isinstance(appid, int) or appid <= 0:
         return {}
-    info = cache.load_app(appid, 30 * 86400)
-    if info or (info == {} and cache.load_app(appid, 3600) is not None):
-        return info
-    info = {}
-    try:
-        url = "https://store.steampowered.com/api/appdetails?appids=%d&filters=basic" % appid
-        with urllib.request.urlopen(url, timeout=4) as r:
-            body = r.read(MAX_APPINFO + 1)
-        data = json.loads(body) if len(body) <= MAX_APPINFO else {}
-        d = (data.get(str(appid)) or {}).get("data") or {}
+
+    def fetch():
+        d = (fetch_small_json("https://store.steampowered.com/api/appdetails?appids=%d&filters=basic" % appid)
+             .get(str(appid)) or {}).get("data") or {}
+        info = {}
         if isinstance(d.get("name"), str):
             info["name"] = d["name"][:256]
         if isinstance(d.get("header_image"), str) and d["header_image"].startswith("https://"):
             info["header"] = d["header_image"][:2048]
-    except Exception:
-        pass
-    cache.save_app(appid, info)
-    return info
+        return info
+    return cached_lookup("apps", appid, fetch)
 
 
 def youtube_info(video_id):
-    """Title and channel for a shared YouTube link, from YouTube's oEmbed
-    endpoint, kept like store_app's answers."""
+    """Title and channel for a shared YouTube link, from YouTube's oEmbed endpoint."""
     if not isinstance(video_id, str) or not re.fullmatch(r"[\w-]{11}", video_id):
         return {}
-    key = "youtube:" + video_id
-    info = cache.load_embed(key, 30 * 86400)
-    if info or (info == {} and cache.load_embed(key, 3600) is not None):
-        return info
-    info = {}
-    try:
-        url = ("https://www.youtube.com/oembed?format=json&url="
-               + urllib.request.quote("https://www.youtube.com/watch?v=" + video_id, safe=""))
-        with urllib.request.urlopen(url, timeout=4) as r:
-            body = r.read(MAX_APPINFO + 1)
-        d = json.loads(body) if len(body) <= MAX_APPINFO else {}
+
+    def fetch():
+        d = fetch_small_json("https://www.youtube.com/oembed?format=json&url="
+                             + urllib.request.quote("https://www.youtube.com/watch?v=" + video_id, safe=""))
+        info = {}
         if isinstance(d.get("title"), str):
             info["title"] = d["title"][:300]
         if isinstance(d.get("author_name"), str):
             info["author"] = d["author_name"][:200]
-    except Exception:
-        pass
-    cache.save_embed(key, info)
-    return info
+        return info
+    return cached_lookup("embeds", "youtube:" + video_id, fetch)
+
+
+def digits(value, what):
+    """An id from argv (only digits, so it's safe inside a JS string)."""
+    if not re.fullmatch(r"\d{1,20}", value):
+        raise ValueError("not a %s: %s" % (what, value))
+    return value
 
 
 def chat_target(target):
@@ -776,13 +759,13 @@ def main(argv):
         # What Steam's own "Uninstall" confirmation calls once you confirm.
         return evaluate('SteamClient.Installs.OpenUninstallWizard([%d], true); "uninstalling"' % int(argv[2]))
     if cmd == "friends":
-        value = evaluate(FRIENDS_JS)
+        value = evaluate(FRIENDS_JS % {"persona": PERSONA_JS})
         if isinstance(value, dict):
             cache.save_friends(value.get("friends") or [], value.get("groups") or [])
         return value
     if cmd == "chat":
         read = "true" if len(argv) > 3 and argv[3] == "read" else "false"
-        value = evaluate(CHAT_JS % {"target": chat_target(argv[2]), "read": read, "html": HTML_JS, "embeds": EMBEDS_JS})
+        value = evaluate(CHAT_JS % {"target": chat_target(argv[2]), "read": read, "html": HTML_JS, "embeds": EMBEDS_JS, "persona": PERSONA_JS})
         for m in value.get("messages", []) if isinstance(value, dict) else []:
             for card in m.get("cards") or []:
                 if card.get("type") == "store":
@@ -803,19 +786,15 @@ def main(argv):
     if cmd == "groups":
         return evaluate(GROUPS_JS)
     if cmd == "members":
-        if not re.fullmatch(r"\d{1,20}", argv[2]):
-            raise ValueError("not a group: %s" % argv[2])
-        return evaluate(MEMBERS_JS % {"group": argv[2]})
+        return evaluate(MEMBERS_JS % {"group": digits(argv[2], "group"), "persona": PERSONA_JS})
     if cmd == "remote":
         return evaluate(REMOTE_JS)
     if cmd == "stream":
-        if not re.fullmatch(r"\d{1,20}", argv[3]):
-            raise ValueError("not a computer: %s" % argv[3])
-        return evaluate(STREAM_JS % {"appid": int(argv[2]), "client": argv[3]})
+        # What Steam's Stream button does.
+        return evaluate('SteamClient.Apps.StreamGame(%d, "%s", -1); "streaming"' % (int(argv[2]), digits(argv[3], "computer")))
     if cmd == "desktop":
-        if not re.fullmatch(r"\d{1,20}", argv[2]):
-            raise ValueError("not a computer: %s" % argv[2])
-        return evaluate(DESKTOP_JS % {"client": argv[2]})
+        # Remote Play another computer's whole desktop, as Steam's device list does.
+        return evaluate('SteamClient.RemotePlay.StartDesktopStream("%s"); "streaming"' % digits(argv[2], "computer"))
     if cmd == "wizard-state":
         return evaluate("SteamClient.Installs.GetInstallManagerInfo().then(i => i.eInstallState)")
     if cmd == "overview":

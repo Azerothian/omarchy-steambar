@@ -2,11 +2,14 @@
 
 The friend list is kept as the last snapshot either source produced, so the
 popup can show it straight away and swap in live data when it arrives. The
-community fallback's per-profile statuses live here too.
+community fallback's per-profile statuses live here too, as do details looked
+up for shared links (a store game's name and art, a YouTube title).
 
 Every call here is best effort: a busy or broken cache must never stop the
 live data from reaching the widget.
 """
+import atexit
+import hashlib
 import json
 import os
 import sqlite3
@@ -24,45 +27,58 @@ CREATE TABLE IF NOT EXISTS apps (appid INTEGER PRIMARY KEY, data TEXT, saved INT
 CREATE TABLE IF NOT EXISTS embeds (key TEXT PRIMARY KEY, data TEXT, saved INTEGER);
 """
 
+_db = None
+
 
 def connect():
-    os.makedirs(CACHE, exist_ok=True)
-    # Several helpers run at once (friends, chat, downloads); WAL lets the
-    # reader showing the cache go ahead while a refresh writes.
-    db = sqlite3.connect(DB, timeout=3)
-    db.execute("PRAGMA journal_mode=WAL")
-    db.executescript(SCHEMA)
-    return db
+    """One connection per process (each helper is a short-lived process)."""
+    global _db
+    if _db is None:
+        os.makedirs(CACHE, exist_ok=True)
+        # Several helpers run at once (friends, chat, downloads); WAL lets the
+        # reader showing the cache go ahead while a refresh writes.
+        _db = sqlite3.connect(DB, timeout=3)
+        _db.execute("PRAGMA journal_mode=WAL")
+        _db.executescript(SCHEMA)
+        atexit.register(_db.close)
+    return _db
+
+
+def _meta(db, key):
+    row = db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
 
 
 def save_friends(friends, groups):
-    """Replace the snapshot. Unread counts are left out: shown later they'd be stale."""
+    """Replace the snapshot (skipped when it hasn't changed). Unread counts are
+    left out: shown later they'd be stale."""
+    rows = [(str(f.get("accountid", "")), i, json.dumps(dict(f, unread=0), ensure_ascii=False))
+            for i, f in enumerate(friends) if isinstance(f, dict)]
+    group_rows = [(i, str(g.get("id", "")), str(g.get("name", ""))) for i, g in enumerate(groups) if isinstance(g, dict)]
+    digest = hashlib.sha1(json.dumps([rows, group_rows]).encode()).hexdigest()
     try:
         with connect() as db:
+            if _meta(db, "friends_hash") == digest:
+                return
             db.execute("DELETE FROM friends")
-            db.executemany("INSERT OR REPLACE INTO friends VALUES (?, ?, ?)", [
-                (str(f.get("accountid", "")), i, json.dumps(dict(f, unread=0), ensure_ascii=False))
-                for i, f in enumerate(friends) if isinstance(f, dict)])
+            db.executemany("INSERT OR REPLACE INTO friends VALUES (?, ?, ?)", rows)
             db.execute("DELETE FROM friend_groups")
-            db.executemany("INSERT INTO friend_groups VALUES (?, ?, ?)",
-                           [(i, str(g.get("id", "")), str(g.get("name", ""))) for i, g in enumerate(groups) if isinstance(g, dict)])
-            db.execute("INSERT OR REPLACE INTO meta VALUES ('friends_saved', ?)", (str(int(time.time())),))
+            db.executemany("INSERT INTO friend_groups VALUES (?, ?, ?)", group_rows)
+            db.execute("INSERT OR REPLACE INTO meta VALUES ('friends_hash', ?)", (digest,))
     except (sqlite3.Error, OSError):
         pass
 
 
 def load_friends():
-    """The last snapshot: {"friends", "groups", "saved"} (empty when there's none)."""
+    """The last snapshot: {"friends", "groups", "collapsed"} (empty when there's none)."""
     try:
-        with connect() as db:
-            friends = [json.loads(d) for (d,) in db.execute("SELECT data FROM friends ORDER BY pos")]
-            groups = [{"id": i, "name": n} for i, n in db.execute("SELECT id, name FROM friend_groups ORDER BY pos")]
-            saved = db.execute("SELECT value FROM meta WHERE key = 'friends_saved'").fetchone()
-            collapsed = db.execute("SELECT value FROM meta WHERE key = 'groups_collapsed'").fetchone()
-        return {"friends": friends, "groups": groups, "saved": int(saved[0]) if saved else 0,
-                "collapsed": json.loads(collapsed[0]) if collapsed else []}
+        db = connect()
+        friends = [json.loads(d) for (d,) in db.execute("SELECT data FROM friends ORDER BY pos")]
+        groups = [{"id": i, "name": n} for i, n in db.execute("SELECT id, name FROM friend_groups ORDER BY pos")]
+        collapsed = _meta(db, "groups_collapsed")
+        return {"friends": friends, "groups": groups, "collapsed": json.loads(collapsed) if collapsed else []}
     except (sqlite3.Error, OSError, ValueError):
-        return {"friends": [], "groups": [], "saved": 0, "collapsed": []}
+        return {"friends": [], "groups": [], "collapsed": []}
 
 
 def save_collapsed(ids):
@@ -77,8 +93,7 @@ def save_collapsed(ids):
 
 def load_statuses():
     try:
-        with connect() as db:
-            return {a: json.loads(d) for a, d in db.execute("SELECT accountid, data FROM profile_status")}
+        return {a: json.loads(d) for a, d in connect().execute("SELECT accountid, data FROM profile_status")}
     except (sqlite3.Error, OSError, ValueError):
         return {}
 
@@ -92,44 +107,26 @@ def save_statuses(known):
         pass
 
 
-def load_app(appid, max_age):
-    """A store app's {name, header} saved by save_app, if younger than max_age seconds."""
+# Looked-up details: "apps" by app id, "embeds" by a key like "youtube:<id>".
+_KEYS = {"apps": "appid", "embeds": "key"}
+
+
+def load_lookup(table, key):
+    """(details, age in seconds) saved by save_lookup, or (None, None)."""
     try:
-        with connect() as db:
-            row = db.execute("SELECT data, saved FROM apps WHERE appid = ?", (int(appid),)).fetchone()
-        if row and time.time() - row[1] < max_age:
-            return json.loads(row[0])
-    except (sqlite3.Error, OSError, ValueError):
+        row = connect().execute("SELECT data, saved FROM %s WHERE %s = ?" % (table, _KEYS[table]), (key,)).fetchone()
+        if row:
+            return json.loads(row[0]), time.time() - row[1]
+    except (sqlite3.Error, OSError, ValueError, KeyError):
         pass
-    return None
+    return None, None
 
 
-def save_app(appid, info):
+def save_lookup(table, key, info):
     try:
         with connect() as db:
-            db.execute("INSERT OR REPLACE INTO apps VALUES (?, ?, ?)",
-                       (int(appid), json.dumps(info, ensure_ascii=False), int(time.time())))
-    except (sqlite3.Error, OSError):
-        pass
-
-
-def load_embed(key, max_age):
-    """Details looked up for a shared link (e.g. a YouTube title), if younger than max_age seconds."""
-    try:
-        with connect() as db:
-            row = db.execute("SELECT data, saved FROM embeds WHERE key = ?", (str(key),)).fetchone()
-        if row and time.time() - row[1] < max_age:
-            return json.loads(row[0])
-    except (sqlite3.Error, OSError, ValueError):
-        pass
-    return None
-
-
-def save_embed(key, info):
-    try:
-        with connect() as db:
-            db.execute("INSERT OR REPLACE INTO embeds VALUES (?, ?, ?)",
-                       (str(key), json.dumps(info, ensure_ascii=False), int(time.time())))
+            db.execute("INSERT OR REPLACE INTO %s VALUES (?, ?, ?)" % table,
+                       (key, json.dumps(info, ensure_ascii=False), int(time.time())))
     except (sqlite3.Error, OSError):
         pass
 

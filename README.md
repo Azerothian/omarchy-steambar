@@ -13,9 +13,9 @@ A bar widget for [Omarchy](https://omarchy.org)'s shell that puts Steam in a pop
   requirements and the most helpful reviews. Buying opens Steam.
 - **Recent**: your recently played, installed games. Click to play.
 - **Library**: everything you own, searchable (`/`). With other computers signed in to Steam, the
-  list starts with a **Remote Play** section, like a friend group (minimise it from its header):
-  a row per computer with how many of your games it can stream; click one to Remote Play its
-  desktop.
+  list starts with a **Remote Play** section, like a friend group (minimise it from its header, or
+  tick its box for icons): a row per computer with how many of your games it can stream; click one
+  to Remote Play its desktop.
   One line of chips filters the list: **Installed** (on by default, and including games installed
   on your other computers), **Uninstalled**, **Most played** and **Group by computer** as icons,
   then This PC and a chip per computer to show only its games (click again for all). Click a game
@@ -72,9 +72,9 @@ entry in `~/.config/omarchy/shell.json`:
   to (text matched against your Steam library folders' paths, e.g. `GAMES` for
   `/run/media/you/GAMES/SteamLibrary`; empty uses Steam's default).
 - **Friends and chat**: show offline friends, Steam names beside nicknames, the time on each
-  message, and which friend groups to show as rows of avatars above the
-  friends search instead of in the list (with what they're playing; click to chat). The box on a
-  group's header in the list promotes it; untick it in Settings to bring it back.
+  message, and which friend groups to show as icons: in their place in the
+  list, as one row of avatars with what they're playing (click to chat). The box on a group's
+  header switches it too.
 - **Cache**: clear what's kept in `~/.cache/blip-steam`.
 
 ## Keys

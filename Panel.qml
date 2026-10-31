@@ -68,16 +68,6 @@ Panel {
     if (typeof v === "string") v = v.split(/\s+/)
     return Array.isArray(v) ? v.map(String).filter(function(id) { return id !== "" }) : []
   }
-  readonly property var iconBars: friendGroups.filter(function(g) { return iconGroups.indexOf(g.id) >= 0 }).map(function(g) {
-    return {
-      group: g,
-      members: friends.filter(function(f) {
-        return (f.groups || []).indexOf(g.id) >= 0
-          && (showOfflineFriends || (f.state !== "offline" && f.state !== "unknown"))
-      })
-    }
-  })
-
   function toggleIconGroup(id) {
     var list = iconGroups.slice(), at = list.indexOf(id)
     if (at >= 0) list.splice(at, 1); else list.push(id)
@@ -189,15 +179,20 @@ Panel {
 
   // Remote Play heads the library like a friend group: a header that
   // minimises, then a row per computer (click for its desktop).
+  // The box on the Remote Play header shows its computers as a row of
+  // icons, still in its place in the list.
+  readonly property bool remotePlayIcons: pref("remotePlayIcons", false) === true
+
   readonly property var remotePlayRows: {
     if (!remoteDevices.length) return []
     var collapsed = !!collapsedGroups.remoteplay
     var out = [{ isHeader: true, sectionId: "remoteplay", name: "Remote Play", count: remoteDevices.length,
                  collapsible: true, collapsed: collapsed, first: true }]
-    if (!collapsed) remoteDevices.forEach(function(d) {
-      out.push({ isDevice: true, device: d, count: games.filter(function(g) {
-        return (remoteApps[String(g.appid)] || []).indexOf(d.id) >= 0 }).length })
+    var devices = remoteDevices.map(function(d) {
+      return { isDevice: true, device: d, count: games.filter(function(g) {
+        return (remoteApps[String(g.appid)] || []).indexOf(d.id) >= 0 }).length }
     })
+    if (!collapsed) out = out.concat(remotePlayIcons ? [{ isDeviceBar: true, devices: devices }] : devices)
     return out
   }
 
@@ -288,9 +283,9 @@ Panel {
   // several), then everyone else online, then offline. The first row of a
   // section carries its header.
   readonly property var friendRows: {
-    // Groups promoted to icon bars leave the list altogether.
-    var sections = friendGroups.filter(function(g) { return iconGroups.indexOf(g.id) < 0 })
-      .map(function(g) { return { name: g.name, id: g.id, members: [] } })
+    // A group ticked for icons keeps its place: its header, then one row of
+    // avatars instead of a row per friend.
+    var sections = friendGroups.map(function(g) { return { name: g.name, id: g.id, members: [], icons: iconGroups.indexOf(g.id) >= 0 } })
     var byId = {}
     for (var i = 0; i < sections.length; i++) byId[sections[i].id] = sections[i]
     var online = { name: "Online", id: "online", members: [] }, offline = { name: "Offline", id: "offline", members: [] }
@@ -299,10 +294,8 @@ Panel {
       var f = friends[j], placed = false
       if (q !== "" && [f.name, f.personaName, f.game].join("\n").toLowerCase().indexOf(q) < 0) continue
       var ids = f.groups || []
-      for (var k = 0; k < ids.length; k++) {
+      for (var k = 0; k < ids.length; k++)
         if (byId[ids[k]]) { byId[ids[k]].members.push(f); placed = true }
-        else if (iconGroups.indexOf(ids[k]) >= 0) placed = true   // in its icon bar
-      }
       if (!placed) (f.state === "offline" || f.state === "unknown" ? offline : online).members.push(f)
     }
     var out = []
@@ -318,11 +311,13 @@ Panel {
       var collapsed = !!collapsedGroups[sec.id] && q === ""
       out.push({
         isHeader: true, sectionId: sec.id, name: sec.name, collapsed: collapsed, first: out.length === 0,
+        icons: !!sec.icons,
         count: sec === online ? String(n) : sec === offline ? String(sec.members.length) : n + "/" + sec.members.length,
       })
-      if (!collapsed) out = out.concat(showOfflineFriends ? sec.members : sec.members.filter(function(f) {
+      var shown = showOfflineFriends ? sec.members : sec.members.filter(function(f) {
         return f.state !== "offline" && f.state !== "unknown"
-      }))
+      })
+      if (!collapsed) out = out.concat(sec.icons ? [{ isIconBar: true, sectionId: sec.id, members: shown }] : shown)
     })
     return out
   }
@@ -1272,11 +1267,13 @@ Panel {
   function activateRow(item) {
     if (!item) return
     if (root.tab === "friends" && item.isHeader) toggleGroup(item.sectionId)
+    else if (root.tab === "friends" && item.isIconBar) return
     else if (root.tab === "friends") chatWith(item)
     else if (root.tab === "groups") chatWithGroup(item)
     else if (root.tab === "store" && !item.owned) openStore(item)
     else if (item.isHeader) { if (item.collapsible) toggleGroup(item.sectionId) }
     else if (item.isDevice) streamDesktop(item.device)
+    else if (item.isDeviceBar) return
     else if (item.streamDevice) streamGame(item, item.streamDevice)
     else if (item.installed) launch("steam://rungameid/" + item.appid)
     else if (streamable(item)) streamGame(item, streamDevices(item)[0])
@@ -2627,133 +2624,6 @@ Panel {
           }
         }
 
-        // ---------- icon bars: groups' friends at a glance ----------
-        Repeater {
-          model: root.tab === "friends" ? root.iconBars : []
-
-          ColumnLayout {
-            id: iconBar
-            required property var modelData
-            Layout.fillWidth: true
-            spacing: Style.space(4)
-
-            RowLayout {
-              Layout.fillWidth: true
-
-              Text {
-                Layout.fillWidth: true
-                leftPadding: Style.space(2)
-                text: iconBar.modelData.group.name
-                color: Qt.darker(root.foreground, 1.4)
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                font.bold: true
-                font.letterSpacing: 1
-                font.capitalization: Font.AllUppercase
-                elide: Text.ElideRight
-              }
-
-            }
-
-            Text {
-              visible: iconBar.modelData.members.length === 0
-              leftPadding: Style.space(2)
-              text: "Nobody online"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-
-            ListView {
-              visible: iconBar.modelData.members.length > 0
-              Layout.fillWidth: true
-              Layout.preferredHeight: Style.space(38)
-              orientation: ListView.Horizontal
-              spacing: Style.space(6)
-              clip: true
-              boundsBehavior: Flickable.StopAtBounds
-              model: iconBar.modelData.members
-
-              delegate: Item {
-                id: quick
-                required property var modelData
-                readonly property bool offline: modelData.state === "offline" || modelData.state === "unknown"
-                width: Style.space(34)
-                height: Style.space(38)
-
-                ClippingRectangle {
-                  anchors.centerIn: parent
-                  width: Style.space(32)
-                  height: width
-                  radius: Style.space(4)
-                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-                  opacity: quick.offline ? 0.4 : 1
-                  border.width: quickMouse.containsMouse ? 1 : 0
-                  border.color: root.foreground
-
-                  Image {
-                    anchors.fill: parent
-                    source: quick.modelData.avatar || ""
-                    sourceSize.width: 64
-                    fillMode: Image.PreserveAspectCrop
-                    asynchronous: true
-                  }
-
-                  // What they're playing, in the corner.
-                  Image {
-                    visible: status === Image.Ready
-                    anchors.left: parent.left
-                    anchors.bottom: parent.bottom
-                    width: Style.space(14)
-                    height: width
-                    source: root.gameIcon(quick.modelData)
-                    sourceSize.width: 32
-                    fillMode: Image.PreserveAspectCrop
-                    asynchronous: true
-                  }
-                }
-
-                Rectangle {
-                  visible: !quick.offline
-                  width: Style.space(9)
-                  height: width
-                  radius: width / 2
-                  anchors.right: parent.right
-                  anchors.bottom: parent.bottom
-                  anchors.bottomMargin: Style.space(1)
-                  color: root.stateColor(quick.modelData.state)
-                  border.width: Style.space(2)
-                  border.color: Color.background
-                }
-
-                Rectangle {
-                  visible: (quick.modelData.unread || 0) > 0
-                  width: Style.space(9)
-                  height: width
-                  radius: width / 2
-                  anchors.right: parent.right
-                  anchors.top: parent.top
-                  color: root.inGameColor
-                  border.width: Style.space(2)
-                  border.color: Color.background
-                }
-
-                MouseArea {
-                  id: quickMouse
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: root.chatWith(quick.modelData)
-                }
-
-                ToolTip.visible: quickMouse.containsMouse
-                ToolTip.delay: 300
-                ToolTip.text: quick.modelData.name + " · " + root.friendLine(quick.modelData)
-              }
-            }
-          }
-        }
-
         ColumnLayout {
           Layout.fillWidth: true
           visible: root.tab === "library" || root.tab === "friends" || (root.tab === "groups" && root.groupChats.length > 0)
@@ -3174,7 +3044,7 @@ Panel {
 
             Text {
               Layout.topMargin: Style.space(4)
-              text: "Groups as icon bars above the friends search"
+              text: "Groups shown as icons"
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -3182,7 +3052,7 @@ Panel {
 
             SettingsNote {
               text: root.friendGroups.length
-                ? "Each as a row of avatars with what they're playing, instead of in the list. Click one to chat. The box on a group's header in the list promotes it; untick it here to bring it back."
+                ? "Each shown in its place in the list as a row of avatars with what they're playing. Click one to chat. The box on a group's header does the same."
                 : "Needs Steam's debugging port: your friend groups come from the running client."
             }
 
@@ -3272,9 +3142,10 @@ Panel {
             required property int index
             // Leave a gutter for the scrollbar so it doesn't sit on the row's buttons.
             width: list.width - (list.contentHeight > list.height ? listBar.width + Style.space(2) : 0)
-            sourceComponent: root.tab === "friends" ? friendRow : root.tab === "groups" ? groupRow : root.tab === "recent" ? recentRow
+            sourceComponent: root.tab === "friends" ? (modelData && modelData.isIconBar ? friendIconBar : friendRow)
+              : root.tab === "groups" ? groupRow : root.tab === "recent" ? recentRow
               : root.tab === "store" ? storeRow : modelData && modelData.isHeader ? libraryHeader
-              : modelData && modelData.isDevice ? deviceRow : libraryRow
+              : modelData && modelData.isDevice ? deviceRow : modelData && modelData.isDeviceBar ? deviceBar : libraryRow
             property var entry: modelData
             property int rowIdx: index
           }
@@ -4087,6 +3958,107 @@ Panel {
     }
   }
 
+  // A friend group in icon mode: its friends as one row of avatars, with
+  // what they're playing; click one to chat. Scrolls sideways if long.
+  Component {
+    id: friendIconBar
+    Item {
+      id: fib
+      readonly property var entry: parent ? parent.entry : null
+      width: parent ? parent.width : 0
+      implicitHeight: Style.space(42)
+
+      ListView {
+        anchors.fill: parent
+        anchors.leftMargin: Style.space(6)
+        anchors.topMargin: Style.space(2)
+        orientation: ListView.Horizontal
+        spacing: Style.space(6)
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+        model: fib.entry ? fib.entry.members : []
+
+          delegate: Item {
+            id: quick
+            required property var modelData
+            readonly property bool offline: modelData.state === "offline" || modelData.state === "unknown"
+            width: Style.space(34)
+            height: Style.space(38)
+
+            ClippingRectangle {
+              anchors.centerIn: parent
+              width: Style.space(32)
+              height: width
+              radius: Style.space(4)
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+              opacity: quick.offline ? 0.4 : 1
+              border.width: quickMouse.containsMouse ? 1 : 0
+              border.color: root.foreground
+
+              Image {
+                anchors.fill: parent
+                source: quick.modelData.avatar || ""
+                sourceSize.width: 64
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+              }
+
+              // What they're playing, in the corner.
+              Image {
+                visible: status === Image.Ready
+                anchors.left: parent.left
+                anchors.bottom: parent.bottom
+                width: Style.space(14)
+                height: width
+                source: root.gameIcon(quick.modelData)
+                sourceSize.width: 32
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+              }
+            }
+
+            Rectangle {
+              visible: !quick.offline
+              width: Style.space(9)
+              height: width
+              radius: width / 2
+              anchors.right: parent.right
+              anchors.bottom: parent.bottom
+              anchors.bottomMargin: Style.space(1)
+              color: root.stateColor(quick.modelData.state)
+              border.width: Style.space(2)
+              border.color: Color.background
+            }
+
+            Rectangle {
+              visible: (quick.modelData.unread || 0) > 0
+              width: Style.space(9)
+              height: width
+              radius: width / 2
+              anchors.right: parent.right
+              anchors.top: parent.top
+              color: root.inGameColor
+              border.width: Style.space(2)
+              border.color: Color.background
+            }
+
+            MouseArea {
+              id: quickMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.chatWith(quick.modelData)
+            }
+
+            ToolTip.visible: quickMouse.containsMouse
+            ToolTip.delay: 300
+            ToolTip.text: quick.modelData.name + " · " + root.friendLine(quick.modelData)
+          }
+
+      }
+    }
+  }
+
   // A section header in the library: Remote Play (which minimises, like a
   // friend group) or a computer's games when grouped by computer.
   Component {
@@ -4120,6 +4092,114 @@ Panel {
           font.bold: true
           font.letterSpacing: 1.2
           elide: Text.ElideRight
+        }
+
+        // Remote Play: show the computers as icons (in place) or as rows.
+        FilterTick {
+          visible: !!lh.entry && lh.entry.sectionId === "remoteplay"
+          anchors.right: parent.right
+          anchors.rightMargin: Style.space(8)
+          anchors.verticalCenter: parent.verticalCenter
+          height: parent.height
+          label: ""
+          checked: root.remotePlayIcons
+          foreground: root.foreground
+          dim: root.dim
+          fontFamily: root.fontFamily
+          ToolTip.visible: remoteIconsHover.hovered
+          ToolTip.delay: 300
+          ToolTip.text: checked ? "Show as a list" : "Show as icons"
+          HoverHandler { id: remoteIconsHover }
+          onToggled: root.savePref("remotePlayIcons", !root.remotePlayIcons)
+        }
+      }
+    }
+  }
+
+  // Remote Play in icon mode: the computers as a row of tiles in the list.
+  Component {
+    id: deviceBar
+    Item {
+      id: db
+      readonly property var entry: parent ? parent.entry : null
+      width: parent ? parent.width : 0
+      implicitHeight: tiles.implicitHeight + Style.space(6)
+
+      Row {
+        id: tiles
+        x: Style.space(6)
+        y: Style.space(3)
+        spacing: Style.space(22)
+
+        Repeater {
+          model: db.entry ? db.entry.devices : []
+
+          // A computer: click to Remote Play its desktop.
+          Item {
+            id: tile
+            required property var modelData
+            width: Style.space(64)
+            height: tileCol.implicitHeight
+
+            Column {
+              id: tileCol
+              width: parent.width
+              spacing: Style.space(2)
+
+              Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: Style.space(32)
+                height: width
+                radius: Style.space(4)
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, tileMouse.containsMouse ? 0.16 : 0.08)
+                border.width: tileMouse.containsMouse ? 1 : 0
+                border.color: root.foreground
+
+                Text {
+                  anchors.centerIn: parent
+                  text: tileMouse.containsMouse ? "󰐊" : "󰍹"
+                  color: tileMouse.containsMouse ? root.onlineColor : root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.body
+                }
+
+                Rectangle {
+                  width: Style.space(9)
+                  height: width
+                  radius: width / 2
+                  anchors.right: parent.right
+                  anchors.bottom: parent.bottom
+                  anchors.rightMargin: -Style.space(2)
+                  anchors.bottomMargin: -Style.space(2)
+                  color: root.onlineColor
+                  border.width: Style.space(2)
+                  border.color: Color.background
+                }
+              }
+
+              Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: tile.modelData.device.name
+                color: tileMouse.containsMouse ? root.foreground : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+            }
+
+            MouseArea {
+              id: tileMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.streamDesktop(tile.modelData.device)
+            }
+
+            ToolTip.visible: tileMouse.containsMouse
+            ToolTip.delay: 300
+            ToolTip.text: "Remote Play " + tile.modelData.device.name + "'s desktop · " + tile.modelData.count + " games to stream"
+          }
         }
       }
     }
@@ -4573,10 +4653,10 @@ Panel {
             anchors.verticalCenter: parent.verticalCenter
             height: parent.height
             label: ""
-            checked: false
+            checked: fc.isHeader && !!fc.entry.icons
             ToolTip.visible: iconsHover.hovered
             ToolTip.delay: 300
-            ToolTip.text: "Show as icons above the search (undo in Settings)"
+            ToolTip.text: checked ? "Show as a list" : "Show as icons"
             HoverHandler { id: iconsHover }
             foreground: root.foreground
             dim: root.dim

@@ -2148,7 +2148,8 @@ Panel {
       Grid {
         id: rail
         anchors.left: parent.left
-        anchors.top: parent.top
+        // Across the top it sits in its slot under the header.
+        y: root.railTop ? listPane.y + railSlot.y : 0
         // Across the top the logo moves to the header line, beside the title.
         columns: root.railTop ? root.tabOrder.length + 1 : 1
         spacing: Style.space(4)
@@ -2216,10 +2217,10 @@ Panel {
       }
 
       Rectangle {
-        x: root.railTop ? 0 : rail.width + Style.space(8)
-        y: root.railTop ? rail.height + Style.space(5) : 0
-        width: root.railTop ? root.listWidth - panel.padding * 2 : 1
-        height: root.railTop ? 1 : parent.height
+        visible: !root.railTop
+        x: rail.width + Style.space(8)
+        width: 1
+        height: parent.height
         color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
       }
 
@@ -2227,8 +2228,7 @@ Panel {
         id: listPane
         anchors.left: root.railTop ? parent.left : rail.right
         anchors.leftMargin: root.railTop ? 0 : Style.space(17)
-        anchors.top: root.railTop ? rail.bottom : parent.top
-        anchors.topMargin: root.railTop ? Style.space(10) : 0
+        anchors.top: parent.top
         anchors.bottom: parent.bottom
         width: root.railTop ? root.listWidth - panel.padding * 2
           : root.listWidth - root.railWidth - Style.space(17) - panel.padding * 2
@@ -2296,11 +2296,25 @@ Panel {
           }
         }
 
-        // With the tabs across the top, a line sets the header apart from
-        // what's under it, as the rail's edge does on the left.
+        // With the tabs across the top: the header, a line, the tabs (placed
+        // in this slot), another line, then the tab's content.
         Rectangle {
           Layout.fillWidth: true
           Layout.topMargin: -Style.space(4)
+          visible: root.railTop
+          implicitHeight: 1
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+        }
+
+        Item {
+          id: railSlot
+          Layout.fillWidth: true
+          visible: root.railTop
+          implicitHeight: rail.height
+        }
+
+        Rectangle {
+          Layout.fillWidth: true
           Layout.bottomMargin: Style.space(2)
           visible: root.railTop
           implicitHeight: 1

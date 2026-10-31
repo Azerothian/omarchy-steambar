@@ -180,15 +180,19 @@ Panel {
     for (var j = 0; j < games.length; j++) {
       var g = games[j]
       if (q !== "" && g.name.toLowerCase().indexOf(q) < 0) continue
-      if (installedOnly && !g.installed) continue
-      if (uninstalledOnly && g.installed) continue
+      // Installed counts games you can stream from another computer too.
+      var here = g.installed || streamable(g)
+      if (installedOnly && !here) continue
+      if (uninstalledOnly && here) continue
       if (mostPlayed && !(g.playtime > 0)) continue
       out.push(g)
     }
     // Most played: by hours. Otherwise installed first, then by name.
     out.sort(function(a, b) {
       if (mostPlayed && a.playtime !== b.playtime) return b.playtime - a.playtime
-      if (!mostPlayed && a.installed !== b.installed) return a.installed ? -1 : 1
+      // Installed here, then streamable, then the rest.
+      var ra = a.installed ? 0 : streamable(a) ? 1 : 2, rb = b.installed ? 0 : streamable(b) ? 1 : 2
+      if (!mostPlayed && ra !== rb) return ra - rb
       return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1
     })
     return out
@@ -661,7 +665,48 @@ Panel {
   onInstalledOnlyChanged: { rowIndex = 0; list.positionViewAtBeginning() }
 
   // ---------- data ----------
-  function refreshGames() { if (!gamesProc.running) gamesProc.running = true }
+  function refreshGames() { if (!gamesProc.running) gamesProc.running = true; refreshRemote() }
+
+  // Remote Play: other computers online and the games installed on them
+  // (steamctl.py remote), so the library can stream what isn't installed here.
+  property var remoteDevices: []
+  property var remoteApps: ({})
+  property var remoteSelected: ({})
+  property bool remoteBusy: false
+
+  function refreshRemote() {
+    if (!controllable || remoteBusy) return
+    remoteBusy = true
+    runCtl(["remote"], function(ok, value) {
+      root.remoteBusy = false
+      if (!ok || !value) return
+      root.remoteDevices = value.devices || []
+      root.remoteApps = value.apps || {}
+      root.remoteSelected = value.selected || {}
+    })
+  }
+
+  // The computers a game can stream from, the one Steam last used first.
+  function streamDevices(game) {
+    var ids = game ? remoteApps[String(game.appid)] || [] : []
+    var first = game ? remoteSelected[String(game.appid)] : ""
+    var out = []
+    for (var i = 0; i < remoteDevices.length; i++)
+      if (ids.indexOf(remoteDevices[i].id) >= 0) out.push(remoteDevices[i])
+    out.sort(function(a, b) { return (b.id === first) - (a.id === first) })
+    return out
+  }
+
+  function streamable(game) { return !!game && !game.installed && (remoteApps[String(game.appid)] || []).length > 0 }
+
+  function streamGame(game, device) {
+    if (!game || !device) return
+    actionError = ""
+    runCtl(["stream", String(game.appid), device.id], function(ok, value, error) {
+      if (!ok) root.actionError = "Couldn't stream " + game.name + ": " + error
+    })
+    close()
+  }
   // steam.py caches the lists for an hour, so this is cheap to call often.
   function refreshStoreLists() { if (!storeListsProc.running) storeListsProc.running = true }
   // With Steam controllable the friend list comes live from the client
@@ -727,7 +772,7 @@ Panel {
     })
   }
 
-  onControllableChanged: if (controllable) { refreshFriends(); steamStarting = false }
+  onControllableChanged: if (controllable) { refreshFriends(); refreshRemote(); steamStarting = false }
 
   // ---------- chat ----------
   // Clicking a friend widens the popup to the right with a chat pane that
@@ -1082,6 +1127,7 @@ Panel {
     else if (root.tab === "groups") chatWithGroup(item)
     else if (root.tab === "store" && !item.owned) openStore(item)
     else if (item.installed) launch("steam://rungameid/" + item.appid)
+    else if (streamable(item)) streamGame(item, streamDevices(item)[0])
     else if (downloadsById[item.appid]) toggleDownload(downloadsById[item.appid])
     else installGame(item, preferredFolder)
   }
@@ -3843,6 +3889,8 @@ Panel {
       id: l
       readonly property var game: parent ? parent.entry : null
       readonly property var download: game ? root.downloadsById[game.appid] || null : null
+      // Installed on another computer: stream it from there.
+      readonly property var streamFrom: root.streamable(game) ? root.streamDevices(game) : []
       readonly property bool showActions: hasCursor && !!game && !game.installed && root.controllable
         && (!download || ["downloading", "paused", "queued", "preparing"].indexOf(download.status) >= 0)
       rowIdx: parent ? parent.rowIdx : 0
@@ -3864,7 +3912,7 @@ Panel {
         anchors.leftMargin: Style.space(6)
         anchors.rightMargin: Style.space(8)
         spacing: Style.space(10)
-        opacity: l.game && (l.game.installed || l.download) ? 1 : 0.6
+        opacity: l.game && (l.game.installed || l.download || l.streamFrom.length) ? 1 : 0.6
 
         Item {
           Layout.preferredWidth: Style.space(22)
@@ -3900,6 +3948,7 @@ Panel {
           visible: text !== ""
           text: l.game && root.uninstalling[l.game.appid] ? "Uninstalling…"
             : l.download ? (l.download.status === "paused" ? "Paused" : l.download.total ? Math.floor(l.download.progress * 100) + "%" : "")
+            : l.streamFrom.length && !l.showActions ? "Stream · " + l.streamFrom[0].name
             : l.game ? root.playtimeLabel(l.game.playtime) : ""
           color: root.dim
           font.family: root.fontFamily
@@ -3914,7 +3963,8 @@ Panel {
 
         Text {
           visible: !l.showActions
-          text: l.hasCursor ? (l.game && l.game.installed ? "󰐊" : "󰇚") : (l.game && l.game.installed ? "" : "󰇚")
+          text: l.streamFrom.length ? "󰍹"
+            : l.hasCursor ? (l.game && l.game.installed ? "󰐊" : "󰇚") : (l.game && l.game.installed ? "" : "󰇚")
           Layout.preferredWidth: Style.font.icon
           horizontalAlignment: Text.AlignHCenter
           color: l.hasCursor ? root.foreground : root.dim
@@ -3936,6 +3986,22 @@ Panel {
           onClicked: root.toggleDownload(l.download)
         }
 
+        // Hovered: stream from each computer that has it (the usual one bright)…
+        Repeater {
+          model: l.showActions && !l.download ? l.streamFrom : []
+          PanelActionButton {
+            required property var modelData
+            required property int index
+            iconText: "󰍹"
+            tooltipText: "Stream from " + modelData.name
+            foreground: index === 0 ? root.foreground : root.dim
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: root.streamGame(l.game, modelData)
+          }
+        }
+
+        // …or install it here.
         Repeater {
           model: l.showActions && !l.download ? root.folders : []
           PanelActionButton {

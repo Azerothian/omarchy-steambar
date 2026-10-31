@@ -15,6 +15,9 @@ client's own UI uses. This is how Decky Loader talks to Steam too.
   steamctl.py uninstall <appid>     -> uninstall a game (no confirmation dialog)
   steamctl.py friends               -> friend list with live presence and unread counts
   steamctl.py groups                -> your group chats and their rooms
+  steamctl.py remote                -> other computers online and the games they can stream
+  steamctl.py stream <appid> <client id>
+                                    -> stream a game from one of them
   steamctl.py chat <chat> [read]    -> recent messages in a chat ("read" marks them read);
                                        <chat> is a friend's account id or groupid:roomid
   steamctl.py react <accountid> <ts> <ordinal> <type> <reaction> add|remove
@@ -565,6 +568,35 @@ EMBEDS_JS = r"""(s => {
   return { rest: tagged, cards: cards }
 })"""
 
+# Remote Play: your other computers signed in to Steam and online, which
+# games each has installed (so you can stream them here), and the computer
+# Steam last picked for each game.
+REMOTE_JS = """
+(() => {
+  const devices = Array.from((window.RemotePlayStore_SteamUI && RemotePlayStore_SteamUI.devices) || [])
+    .filter(d => d && d.clientId && d.status === "Connected")
+    .map(d => ({ id: String(d.clientId), name: d.clientName || "" }))
+  const online = new Set(devices.map(d => d.id))
+  const apps = {}, selected = {}
+  for (const a of Array.from(appStore.allApps || [])) {
+    const on = (a.per_client_data || []).filter(c => c.installed && online.has(String(c.clientid)))
+    if (!on.length) continue
+    apps[a.appid] = on.map(c => String(c.clientid))
+    if (a.selected_clientid && online.has(String(a.selected_clientid))) selected[a.appid] = String(a.selected_clientid)
+  }
+  return { devices: devices, apps: apps, selected: selected }
+})()
+"""
+
+# Stream a game from another computer: what Steam's Stream button does.
+STREAM_JS = """
+(async () => {
+  await SteamClient.Apps.SetStreamingClientForApp(%(appid)d, "%(client)s")
+  SteamClient.Apps.RunGame("%(appid)d", "", -1, 100)
+  return "streaming"
+})()
+"""
+
 # Your group chats (named groups, Steam group chats and ad-hoc chats with
 # several friends), most recently active first, with their text rooms.
 GROUPS_JS = """
@@ -719,6 +751,12 @@ def main(argv):
         return evaluate(SEND_JS % {"target": chat_target(argv[2]), "text": json.dumps(sys.stdin.read())})
     if cmd == "groups":
         return evaluate(GROUPS_JS)
+    if cmd == "remote":
+        return evaluate(REMOTE_JS)
+    if cmd == "stream":
+        if not re.fullmatch(r"\d{1,20}", argv[3]):
+            raise ValueError("not a computer: %s" % argv[3])
+        return evaluate(STREAM_JS % {"appid": int(argv[2]), "client": argv[3]})
     if cmd == "wizard-state":
         return evaluate("SteamClient.Installs.GetInstallManagerInfo().then(i => i.eInstallState)")
     if cmd == "overview":

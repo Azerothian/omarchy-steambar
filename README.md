@@ -12,9 +12,11 @@ A bar widget for [Omarchy](https://omarchy.org)'s shell that puts Steam in a pop
   popup: trailers and screenshots, description, reviews, tags, Steam Deck status, system
   requirements and the most helpful reviews. Buying opens Steam.
 - **Recent**: your recently played, installed games. Click to play.
-- **Library**: everything you own, searchable (`/`). It opens on **Installed** games; untick it
-  to see everything, tick **Uninstalled** for the games you haven't installed, or **Most played**
-  to sort by hours. Uninstalled games install to the drive of your choice.
+- **Library**: everything you own, searchable (`/`). It opens on **Installed** games, which
+  includes games installed on your other computers (Remote Play), marked with the computer to
+  stream from: click to stream, or hover to pick another computer or install here. Untick it to
+  see everything, tick **Uninstalled** for the games you can't play yet, or **Most played** to sort
+  by hours. Uninstalled games install to the drive of your choice.
 - **Groups**: your Steam group chats (named groups, Steam group chats and chats with several
   friends), newest first, with unread counts. Open one to read and write in it, switch between its
   rooms, or pop it out into its own window. Needs Steam's debugging port.
@@ -92,7 +94,7 @@ From a script or keybinding:
 
 ```sh
 omarchy-shell blip.steam toggle
-omarchy-shell blip.steam tab store        # store | recent | library | friends
+omarchy-shell blip.steam tab store        # store | recent | library | friends | groups | settings
 omarchy-shell blip.steam store 1091500    # open a game's store page by app id
 omarchy-shell blip.steam popout 12345678  # chat with a friend (by account id) in its own window
 omarchy-shell blip.steam groupchat 50739  # open a group chat (by group id)

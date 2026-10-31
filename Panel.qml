@@ -22,8 +22,54 @@ Panel {
   ipcTarget: "blip.steam"
   manageIpc: false
 
-  property string tab: "recent"
-  readonly property var tabOrder: ["store", "recent", "library", "friends"]
+  property string tab: tabOrder[0]
+
+  // ---------- settings ----------
+  // Saved in this widget's shell.json entry (through the shell, as
+  // `omarchy bar set` does); `pending` shows a change before it lands.
+  property var pending: ({})
+
+  function pref(name, fallback) {
+    return pending[name] !== undefined ? pending[name] : setting(name, fallback)
+  }
+
+  function savePref(name, value) {
+    var next = Object.assign({}, pending)
+    next[name] = value
+    pending = next
+    // qs ipc splits arguments at commas, so none may reach it: lists are
+    // saved as space-separated text, and commas inside text are escaped.
+    var json = JSON.stringify(Array.isArray(value) ? value.join(" ") : value).replace(/,/g, "\\u002c")
+    Quickshell.execDetached(["omarchy-shell", "-q", "shell", "setBarWidget", "blip.steam", name, json, "{}"])
+  }
+
+  readonly property var allTabs: ["store", "recent", "library", "friends"]
+  // Your order from dragging the tabs; the first opens with the popup.
+  readonly property var tabOrder: {
+    var saved = pref("tabOrder", null), out = []
+    if (typeof saved === "string") saved = saved.split(/[\s,]+/)
+    if (Array.isArray(saved))
+      for (var i = 0; i < saved.length; i++)
+        if (allTabs.indexOf(saved[i]) >= 0 && out.indexOf(saved[i]) < 0) out.push(saved[i])
+    for (var j = 0; j < allTabs.length; j++) if (out.indexOf(allTabs[j]) < 0) out.push(allTabs[j])
+    return out
+  }
+  readonly property bool railTop: pref("menuPosition", "left") === "top"
+  readonly property bool openFirstTab: pref("openFirstTab", true) !== false
+  readonly property bool installedByDefault: pref("installedByDefault", true) !== false
+  readonly property bool showOfflineFriends: pref("showOfflineFriends", true) !== false
+  readonly property bool showSteamNames: pref("showSteamNames", true) !== false
+  readonly property bool chatInWindow: pref("chatInWindow", false) === true
+  readonly property bool showMessageTimes: pref("showMessageTimes", true) !== false
+  // Set by commands that open the popup on a particular tab.
+  property bool keepTab: false
+
+  function moveTab(from, to) {
+    var order = tabOrder.slice()
+    var moved = order.splice(from, 1)[0]
+    order.splice(to, 0, moved)
+    savePref("tabOrder", order)
+  }
   // The Store tab's own lists, shown as sub-tabs above its rows.
   property string storeKind: "top"
   readonly property var storeKinds: ["top", "upcoming", "new"]
@@ -50,7 +96,7 @@ Panel {
   // games only), installed only (the default) and uninstalled only. The last
   // two exclude each other.
   property bool mostPlayed: false
-  property bool installedOnly: true
+  property bool installedOnly: installedByDefault
   property bool uninstalledOnly: false
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
@@ -58,9 +104,9 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property string script: Qt.resolvedUrl("steam.py").toString().replace(/^file:\/\//, "")
-  readonly property int recentCount: Math.max(1, Number(setting("recentCount", 10)))
-  readonly property string apiKey: String(setting("apiKey", "") || "")
-  readonly property string installDrive: String(setting("installDrive", "") || "")
+  readonly property int recentCount: Math.max(1, Number(pref("recentCount", 10)))
+  readonly property string apiKey: String(pref("apiKey", "") || "")
+  readonly property string installDrive: String(pref("installDrive", "") || "")
   readonly property string ctlScript: Qt.resolvedUrl("steamctl.py").toString().replace(/^file:\/\//, "")
 
   // Steam library folders (steamctl.py folders) and whether the running
@@ -174,13 +220,15 @@ Panel {
         isHeader: true, sectionId: sec.id, name: sec.name, collapsed: collapsed, first: out.length === 0,
         count: sec === online ? String(n) : sec === offline ? String(sec.members.length) : n + "/" + sec.members.length,
       })
-      if (!collapsed) out = out.concat(sec.members)
+      if (!collapsed) out = out.concat(showOfflineFriends ? sec.members : sec.members.filter(function(f) {
+        return f.state !== "offline" && f.state !== "unknown"
+      }))
     })
     return out
   }
 
   readonly property var rows: tab === "recent" ? recentGames : tab === "library" ? libraryGames
-    : tab === "store" ? storeRows : friendRows
+    : tab === "store" ? storeRows : tab === "friends" ? friendRows : []
 
   // Active/queued/paused downloads from `steam.py downloads`, each with a
   // smoothed `speed` (bytes/s) worked out here from successive samples.
@@ -261,6 +309,241 @@ Panel {
   }
 
   // Library filter checkbox: filled box when on, empty and dimmed when off.
+  // One tab in the rail: icon, label, the Friends badge. Tabs that can move
+  // follow the mouse once dragged a few pixels; a plain click selects.
+  component RailTab: Rectangle {
+    id: rt
+    property string tabName: ""
+    property int tabIndex: -1
+    property bool draggable: false
+    // The rail it sits in (its slot positions and drag state).
+    property Item host: null
+    property bool dragging: false
+    property real dragOffset: 0
+    property point pressAt
+    readonly property bool selected: root.tab === tabName
+    readonly property int badge: tabName === "friends" ? (root.unreadTotal || root.friendsOnline) : 0
+    radius: Style.space(6)
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
+      dragging ? 0.18 : selected ? 0.12 : rtMouse.containsMouse ? 0.06 : 0)
+    border.width: selected || dragging ? 1 : 0
+    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.3)
+
+    Column {
+      anchors.centerIn: parent
+      spacing: Style.space(3)
+
+      Text {
+        anchors.horizontalCenter: parent.horizontalCenter
+        text: root.tabInfo[rt.tabName] ? root.tabInfo[rt.tabName].icon : ""
+        color: rt.selected ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.icon
+      }
+
+      Text {
+        anchors.horizontalCenter: parent.horizontalCenter
+        text: root.tabInfo[rt.tabName] ? root.tabInfo[rt.tabName].label : ""
+        color: rt.selected ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: rt.selected
+      }
+    }
+
+    // Friends online, or unread chats (in Steam's in-game green).
+    Rectangle {
+      visible: rt.badge > 0
+      anchors.top: parent.top
+      anchors.right: parent.right
+      anchors.margins: Style.space(4)
+      width: Math.max(height, badgeText.implicitWidth + Style.space(8))
+      height: badgeText.implicitHeight + Style.space(2)
+      radius: height / 2
+      color: root.unreadTotal ? root.inGameColor : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
+
+      Text {
+        id: badgeText
+        anchors.centerIn: parent
+        text: rt.badge
+        color: root.unreadTotal ? "black" : root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption * 0.9
+        font.bold: true
+      }
+    }
+
+    function endDrag() {
+      dragging = false
+      dragOffset = 0
+      rt.host.dragFrom = -1
+      rt.host.dragTo = -1
+    }
+
+    MouseArea {
+      id: rtMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: rt.dragging ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+      onPressed: function(mouse) { rt.pressAt = mapToItem(rt.host, mouse.x, mouse.y) }
+      onPositionChanged: function(mouse) {
+        if (!rt.draggable || !pressed) return
+        var p = mapToItem(rt.host, mouse.x, mouse.y)
+        var d = root.railTop ? p.x - rt.pressAt.x : p.y - rt.pressAt.y
+        if (!rt.dragging && Math.abs(d) > Style.space(6)) { rt.dragging = true; rt.host.dragFrom = rt.tabIndex }
+        if (!rt.dragging) return
+        var last = root.tabOrder.length - 1
+        rt.dragOffset = Math.max(-rt.tabIndex * rt.host.step, Math.min((last - rt.tabIndex) * rt.host.step, d))
+        rt.host.dragTo = Math.max(0, Math.min(last, rt.tabIndex + Math.round(rt.dragOffset / rt.host.step)))
+      }
+      onReleased: {
+        if (rt.dragging) {
+          var from = rt.host.dragFrom, to = rt.host.dragTo
+          rt.endDrag()
+          if (from >= 0 && to >= 0 && from !== to) root.moveTab(from, to)
+        } else root.tab = rt.tabName
+      }
+      onCanceled: rt.endDrag()
+    }
+  }
+
+  // What's limited without the debugging port, and how to turn it on.
+  component DebugNotice: Rectangle {
+    // The header banner can be hidden; the Settings copy stays.
+    property bool closable: true
+    implicitHeight: noticeCol.implicitHeight + Style.space(20)
+    radius: Style.space(6)
+    color: Qt.rgba(root.warnColor.r, root.warnColor.g, root.warnColor.b, 0.1)
+    border.width: 1
+    border.color: Qt.rgba(root.warnColor.r, root.warnColor.g, root.warnColor.b, 0.45)
+
+    ColumnLayout {
+      id: noticeCol
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.top: parent.top
+      anchors.margins: Style.space(10)
+      spacing: Style.space(6)
+
+      RowLayout {
+        Layout.fillWidth: true
+        spacing: Style.space(6)
+
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: !root.steamRunning ? "Steam isn't running"
+            : root.debugFlag ? "Restart Steam to finish turning on control" : "Limited without Steam's debugging port"
+          color: root.warnColor
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          wrapMode: Text.Wrap
+        }
+
+        PanelActionButton {
+          visible: closable
+          iconText: "󰅖"
+          tooltipText: "Hide"
+          foreground: root.dim
+          fontFamily: root.fontFamily
+          fontSize: Style.font.caption
+          onClicked: root.degradedOpen = false
+        }
+      }
+
+      Text {
+        Layout.fillWidth: true
+        textFormat: Text.PlainText
+        text: !root.steamRunning
+          ? "Start Steam for live friends and chat, and to install or pause games from here."
+          : root.debugFlag
+          ? "The flag file is in place, but Steam only opens its debugging port when it starts."
+          : "Friend status is read from public profiles (slow, often incomplete), with no friend groups or "
+            + "most nicknames. Chat and installs open in Steam instead, chats can't pop out into their own "
+            + "windows, and downloads can't be paused here. To turn it on, run this and restart Steam:"
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.Wrap
+      }
+
+      RowLayout {
+        Layout.fillWidth: true
+        visible: root.steamRunning && !root.debugFlag && root.debugFlagPath !== ""
+        spacing: Style.space(6)
+
+        Rectangle {
+          Layout.fillWidth: true
+          implicitHeight: cmdText.implicitHeight + Style.space(10)
+          radius: Style.space(4)
+          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+
+          Text {
+            id: cmdText
+            anchors.fill: parent
+            anchors.margins: Style.space(5)
+            textFormat: Text.PlainText
+            text: root.enableCommand
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WrapAnywhere
+          }
+        }
+
+        PanelActionButton {
+          iconText: "󰆏"
+          tooltipText: "Copy"
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.bodySmall
+          onClicked: root.copyText(root.enableCommand)
+        }
+      }
+
+      Text {
+        Layout.fillWidth: true
+        visible: root.steamRunning && !root.debugFlag
+        textFormat: Text.PlainText
+        text: "While it's on, any program on this computer can control Steam through localhost:8080."
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.Wrap
+      }
+    }
+  }
+
+  component SettingsHeader: Text {
+    property bool first: false
+    Layout.fillWidth: true
+    Layout.topMargin: first ? 0 : Style.space(10)
+    textFormat: Text.PlainText
+    font.capitalization: Font.AllUppercase
+    color: Qt.darker(root.foreground, 1.4)
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    font.bold: true
+    font.letterSpacing: 1.2
+  }
+
+  component SettingsNote: Text {
+    Layout.fillWidth: true
+    textFormat: Text.PlainText
+    color: root.dim
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    wrapMode: Text.Wrap
+  }
+
+  component SettingsToggle: FilterTick {
+    implicitHeight: Style.space(24)
+    foreground: root.foreground
+    dim: root.dim
+    fontFamily: root.fontFamily
+  }
+
   component FilterTick: Item {
     id: tick
     property string label: ""
@@ -371,12 +654,13 @@ Panel {
   property var popouts: []
   property var popoutFriends: ({})
   readonly property real railWidth: Style.space(64)
-  readonly property real listWidth: railWidth + Style.space(340)
+  readonly property real listWidth: railTop ? Style.space(410) : railWidth + Style.space(340)
   readonly property var tabInfo: ({
     store: { icon: "󰓜", label: "Store" },
     recent: { icon: "󰋚", label: "Recent" },
     library: { icon: "󰓓", label: "Library" },
-    friends: { icon: "󰡉", label: "Friends" }
+    friends: { icon: "󰡉", label: "Friends" },
+    settings: { icon: "󰒓", label: "Settings" }
   })
   readonly property real chatWidth: Style.space(330)
   readonly property int unreadTotal: {
@@ -604,6 +888,7 @@ Panel {
   function activateRow(item) {
     if (!item) return
     if (root.tab === "friends" && item.isHeader) toggleGroup(item.sectionId)
+    else if (root.tab === "friends" && chatInWindow && controllable) popOutChat(item)
     else if (root.tab === "friends") openChat(item)
     else if (root.tab === "store" && !item.owned) openStore(item)
     else if (item.installed) launch("steam://rungameid/" + item.appid)
@@ -827,7 +1112,10 @@ Panel {
   // ---------- keyboard ----------
   // Left/Right walk the store's lists, then the other tabs.
   function switchTab(delta) {
-    var views = storeKinds.map(function(k) { return "store:" + k }).concat(tabOrder.slice(1))
+    var views = []
+    tabOrder.concat(["settings"]).forEach(function(t) {
+      views = views.concat(t === "store" ? storeKinds.map(function(k) { return "store:" + k }) : [t])
+    })
     var i = views.indexOf(tab === "store" ? "store:" + storeKind : tab) + delta
     if (i < 0 || i >= views.length) return
     var v = views[i].split(":")
@@ -877,11 +1165,11 @@ Panel {
     function show(): void { root.mainInstance().open() }
     function hide(): void { var items = root.instances(); for (var i = 0; i < items.length; i++) items[i].close() }
     function toggle(): void { root.mainInstance().toggle() }
-    function tab(name: string): void { var t = root.mainInstance(); t.tab = name; t.open() }
+    function tab(name: string): void { var t = root.mainInstance(); t.keepTab = true; t.tab = name; t.open() }
     function chat(account: string): void {
       var t = root.mainInstance()
       for (var i = 0; i < t.friends.length; i++)
-        if (String(t.friends[i].accountid) === account) { t.tab = "friends"; t.open(); t.openChat(t.friends[i]); return }
+        if (String(t.friends[i].accountid) === account) { t.keepTab = true; t.tab = "friends"; t.open(); t.openChat(t.friends[i]); return }
     }
     function video(url: string): void { if (/^https:\/\//.test(url)) root.mainInstance().openVideo(url, 0) }
     function image(url: string): void { if (/^https:\/\//.test(url)) root.mainInstance().openImage(url) }
@@ -892,6 +1180,7 @@ Panel {
     }
     function store(appid: string): void {
       var t = root.mainInstance()
+      t.keepTab = true
       t.tab = "store"
       t.open()
       var list = t.storeRows.concat(t.games)
@@ -1050,6 +1339,8 @@ Panel {
     if (!opened && Date.now() < reopenUntil) { reopenTimer.restart(); return }
     if (opened && reopening) { reopening = false; return }
     if (opened) {
+      if (openFirstTab && !keepTab) tab = tabOrder[0]
+      keepTab = false
       refreshGames()
       refreshFriends()
       refreshDownloads()
@@ -1620,7 +1911,7 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
-      blocked: filterField.activeFocus || chatView.inputFocused
+      blocked: filterField.activeFocus || chatView.inputFocused || apiKeyField.activeFocus || driveField.activeFocus
       onMoveRequested: function(dx, dy) {
         if (dx !== 0 && root.storeOpen) root.stepMedia(dx)
         else if (dx !== 0) root.switchTab(dx)
@@ -1636,10 +1927,8 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
         if (t === "/") root.focusFilter()
-        else if (t === "1") root.tab = "store"
-        else if (t === "2") root.tab = "recent"
-        else if (t === "3") root.tab = "library"
-        else if (t === "4") root.tab = "friends"
+        else if (/^[1-4]$/.test(t)) root.tab = root.tabOrder[Number(t) - 1]
+        else if (t === "5" || t === ",") root.tab = "settings"
         else if (t === "i" && root.tab !== "friends" && root.cursorActive) {
           if (root.storeOpen) root.closeStore(); else root.openStore(root.rows[root.rowIndex])
         }
@@ -1648,111 +1937,93 @@ Panel {
       }
 
       // ---------- tab rail ----------
-      Column {
+      // Down the left edge or across the top (Settings). Drag a tab to move
+      // it; the order is saved and the first tab opens with the popup.
+      Grid {
         id: rail
         anchors.left: parent.left
         anchors.top: parent.top
-        width: root.railWidth
+        columns: root.railTop ? root.tabOrder.length + 2 : 1
         spacing: Style.space(4)
+        readonly property real tabWidth: root.railTop
+          ? (root.listWidth - panel.padding * 2 - logo.width - spacing * (root.tabOrder.length + 1)) / (root.tabOrder.length + 1)
+          : root.railWidth
+        readonly property real tabHeight: root.railTop ? Style.space(48) : Style.space(54)
+        readonly property real step: (root.railTop ? tabWidth : tabHeight) + spacing
+        // While a tab is dragged: where it came from and where it would land.
+        property int dragFrom: -1
+        property int dragTo: -1
 
         Text {
-          width: parent.width
-          height: Style.space(56)
+          id: logo
+          width: root.railTop ? Style.space(34) : root.railWidth
+          height: root.railTop ? rail.tabHeight : Style.space(56)
           horizontalAlignment: Text.AlignHCenter
           verticalAlignment: Text.AlignVCenter
           text: "󰓓"
           color: root.foreground
           font.family: root.fontFamily
-          font.pixelSize: Style.font.display
+          font.pixelSize: root.railTop ? Style.font.title : Style.font.display
         }
 
         Repeater {
           model: root.tabOrder
 
-          Rectangle {
-            id: railTab
+          Item {
+            id: slot
             required property string modelData
-            readonly property bool selected: root.tab === modelData
-            readonly property int badge: modelData === "friends" ? (root.unreadTotal || root.friendsOnline) : 0
-            width: rail.width
-            height: Style.space(54)
-            radius: Style.space(6)
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
-              selected ? 0.12 : railMouse.containsMouse ? 0.06 : 0)
-            border.width: selected ? 1 : 0
-            border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.3)
+            required property int index
+            width: rail.tabWidth
+            height: rail.tabHeight
+            z: railTab.dragging ? 10 : 0
+            // The other tabs slide aside to show where the dragged one would go.
+            readonly property int shift: rail.dragFrom < 0 || index === rail.dragFrom ? 0
+              : rail.dragFrom < index && index <= rail.dragTo ? -1
+              : rail.dragTo <= index && index < rail.dragFrom ? 1 : 0
 
-            Column {
-              anchors.centerIn: parent
-              spacing: Style.space(3)
-
-              Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: root.tabInfo[railTab.modelData].icon
-                color: railTab.selected ? root.foreground : root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.icon
-              }
-
-              Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: root.tabInfo[railTab.modelData].label
-                color: railTab.selected ? root.foreground : root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                font.bold: railTab.selected
-              }
-            }
-
-            // Friends online, or unread chats (in Steam's in-game green).
-            Rectangle {
-              visible: railTab.badge > 0
-              anchors.top: parent.top
-              anchors.right: parent.right
-              anchors.margins: Style.space(4)
-              width: Math.max(height, badgeText.implicitWidth + Style.space(8))
-              height: badgeText.implicitHeight + Style.space(2)
-              radius: height / 2
-              color: root.unreadTotal ? root.inGameColor : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
-
-              Text {
-                id: badgeText
-                anchors.centerIn: parent
-                text: railTab.badge
-                color: root.unreadTotal ? "black" : root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption * 0.9
-                font.bold: true
-              }
-            }
-
-            MouseArea {
-              id: railMouse
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.tab = railTab.modelData
+            RailTab {
+              id: railTab
+              width: parent.width
+              height: parent.height
+              tabName: slot.modelData
+              tabIndex: slot.index
+              draggable: true
+              host: rail
+              x: root.railTop ? (dragging ? dragOffset : slot.shift * rail.step) : 0
+              y: root.railTop ? 0 : (dragging ? dragOffset : slot.shift * rail.step)
+              Behavior on x { enabled: !railTab.dragging; NumberAnimation { duration: 120 } }
+              Behavior on y { enabled: !railTab.dragging; NumberAnimation { duration: 120 } }
             }
           }
+        }
+
+        RailTab {
+          width: rail.tabWidth
+          height: rail.tabHeight
+          tabName: "settings"
+          tabIndex: -1
+          draggable: false
+          host: rail
         }
       }
 
       Rectangle {
-        anchors.left: rail.right
-        anchors.leftMargin: Style.space(8)
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        width: 1
+        x: root.railTop ? 0 : rail.width + Style.space(8)
+        y: root.railTop ? rail.height + Style.space(5) : 0
+        width: root.railTop ? root.listWidth - panel.padding * 2 : 1
+        height: root.railTop ? 1 : parent.height
         color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
       }
 
       ColumnLayout {
         id: listPane
-        anchors.left: rail.right
-        anchors.leftMargin: Style.space(17)
-        anchors.top: parent.top
+        anchors.left: root.railTop ? parent.left : rail.right
+        anchors.leftMargin: root.railTop ? 0 : Style.space(17)
+        anchors.top: root.railTop ? rail.bottom : parent.top
+        anchors.topMargin: root.railTop ? Style.space(10) : 0
         anchors.bottom: parent.bottom
-        width: root.listWidth - root.railWidth - Style.space(17) - panel.padding * 2
+        width: root.railTop ? root.listWidth - panel.padding * 2
+          : root.listWidth - root.railWidth - Style.space(17) - panel.padding * 2
         spacing: Style.space(10)
 
         // ---------- header (lines up with the rail's logo) ----------
@@ -1803,111 +2074,9 @@ Panel {
           }
         }
 
-        // What's limited without the debugging port, and how to turn it on.
-        Rectangle {
+        DebugNotice {
           Layout.fillWidth: true
-          visible: root.degraded && root.degradedOpen
-          implicitHeight: noticeCol.implicitHeight + Style.space(20)
-          radius: Style.space(6)
-          color: Qt.rgba(root.warnColor.r, root.warnColor.g, root.warnColor.b, 0.1)
-          border.width: 1
-          border.color: Qt.rgba(root.warnColor.r, root.warnColor.g, root.warnColor.b, 0.45)
-
-          ColumnLayout {
-            id: noticeCol
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.margins: Style.space(10)
-            spacing: Style.space(6)
-
-            RowLayout {
-              Layout.fillWidth: true
-              spacing: Style.space(6)
-
-              Text {
-                Layout.fillWidth: true
-                textFormat: Text.PlainText
-                text: !root.steamRunning ? "Steam isn't running"
-                  : root.debugFlag ? "Restart Steam to finish turning on control" : "Limited without Steam's debugging port"
-                color: root.warnColor
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                font.bold: true
-                wrapMode: Text.Wrap
-              }
-
-              PanelActionButton {
-                iconText: "󰅖"
-                tooltipText: "Hide"
-                foreground: root.dim
-                fontFamily: root.fontFamily
-                fontSize: Style.font.caption
-                onClicked: root.degradedOpen = false
-              }
-            }
-
-            Text {
-              Layout.fillWidth: true
-              textFormat: Text.PlainText
-              text: !root.steamRunning
-                ? "Start Steam for live friends and chat, and to install or pause games from here."
-                : root.debugFlag
-                ? "The flag file is in place, but Steam only opens its debugging port when it starts."
-                : "Friend status is read from public profiles (slow, often incomplete), with no friend groups or "
-                  + "most nicknames. Chat and installs open in Steam instead, chats can't pop out into their own "
-                  + "windows, and downloads can't be paused here. To turn it on, run this and restart Steam:"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.Wrap
-            }
-
-            RowLayout {
-              Layout.fillWidth: true
-              visible: root.steamRunning && !root.debugFlag && root.debugFlagPath !== ""
-              spacing: Style.space(6)
-
-              Rectangle {
-                Layout.fillWidth: true
-                implicitHeight: cmdText.implicitHeight + Style.space(10)
-                radius: Style.space(4)
-                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-
-                Text {
-                  id: cmdText
-                  anchors.fill: parent
-                  anchors.margins: Style.space(5)
-                  textFormat: Text.PlainText
-                  text: root.enableCommand
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WrapAnywhere
-                }
-              }
-
-              PanelActionButton {
-                iconText: "󰆏"
-                tooltipText: "Copy"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
-                onClicked: root.copyText(root.enableCommand)
-              }
-            }
-
-            Text {
-              Layout.fillWidth: true
-              visible: root.steamRunning && !root.debugFlag
-              textFormat: Text.PlainText
-              text: "While it's on, any program on this computer can control Steam through localhost:8080."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.Wrap
-            }
-          }
+          visible: root.degraded && root.degradedOpen && root.tab !== "settings"
         }
 
         ButtonGroup {
@@ -2004,7 +2173,8 @@ Panel {
           Layout.fillWidth: true
           visible: text !== ""
           textFormat: Text.PlainText
-          text: root.tab === "friends" ? root.friendsError
+          text: root.tab === "settings" ? ""
+            : root.tab === "friends" ? root.friendsError
             : root.tab === "store" ? (root.actionError || (root.storeLists[root.storeKind] || {}).error || root.storeLists.error || "")
             : (root.actionError || root.errorText)
           color: root.urgent
@@ -2016,7 +2186,7 @@ Panel {
         // ---------- downloads ----------
         ColumnLayout {
           Layout.fillWidth: true
-          visible: root.tab !== "friends" && root.downloads.length > 0
+          visible: root.tab !== "friends" && root.tab !== "settings" && root.downloads.length > 0
           spacing: Style.space(6)
 
           // Header doubles as the toggle; folded, it keeps a one-line summary.
@@ -2098,8 +2268,345 @@ Panel {
           PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
         }
 
+        // ---------- settings ----------
+        Flickable {
+          id: settingsView
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          visible: root.tab === "settings"
+          clip: true
+          contentWidth: width
+          contentHeight: settingsCol.implicitHeight + Style.space(12)
+          boundsBehavior: Flickable.StopAtBounds
+          ScrollBar.vertical: ScrollBar { id: settingsBar; policy: ScrollBar.AsNeeded }
+          property bool showKey: false
+          property string keyStatus: ""
+          property bool cacheCleared: false
+          onVisibleChanged: if (visible) {
+            apiKeyField.text = root.apiKey
+            driveField.text = root.installDrive
+            keyStatus = ""
+            showKey = false
+            cacheCleared = false
+          }
+
+          function saveKey() {
+            var key = apiKeyField.text.trim()
+            if (key === "") { root.savePref("apiKey", ""); keyStatus = "Key removed."; return }
+            if (!/^[0-9A-Fa-f]{32}$/.test(key)) { keyStatus = "That doesn't look like a key: it should be 32 letters and numbers (0-9, A-F)."; return }
+            root.savePref("apiKey", key.toUpperCase())
+            keyStatus = "Saved."
+            root.refreshFriends()
+          }
+
+          ColumnLayout {
+            id: settingsCol
+            width: settingsView.width - (settingsView.contentHeight > settingsView.height ? settingsBar.width + Style.space(4) : 0)
+            spacing: Style.space(8)
+
+            // ----- Steam Web API key -----
+            SettingsHeader { text: "Steam Web API key"; first: true }
+
+            SettingsNote {
+              text: root.controllable
+                ? "Optional while Steam's debugging port is on, since friends then come straight from Steam. Used when the port is off: your exact friend list and status in one quick request instead of reading each friend's public profile."
+                : "Gets your exact friend list and status in one quick request, instead of reading each friend's public profile a few at a time."
+            }
+
+            Text {
+              Layout.fillWidth: true
+              textFormat: Text.StyledText
+              text: "1. Open <a href=\"https://steamcommunity.com/dev/apikey\">steamcommunity.com/dev/apikey</a> and sign in.<br>"
+                + "2. Enter any domain name (<i>localhost</i> is fine), agree to the terms and click <b>Register</b>.<br>"
+                + "3. Copy the key it shows and paste it below."
+              color: root.foreground
+              linkColor: root.onlineColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
+              lineHeight: 1.15
+              onLinkActivated: function(link) { Qt.openUrlExternally(link) }
+              HoverHandler { cursorShape: parent.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor }
+            }
+
+            RowLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(6)
+
+              TextField {
+                id: apiKeyField
+                Layout.fillWidth: true
+                placeholderText: "Paste your key"
+                echoMode: settingsView.showKey ? TextInput.Normal : TextInput.Password
+                foreground: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                onAccepted: settingsView.saveKey()
+                Keys.onEscapePressed: keyCatcher.forceActiveFocus()
+              }
+
+              PanelActionButton {
+                iconText: settingsView.showKey ? "󰈉" : "󰈈"
+                tooltipText: settingsView.showKey ? "Hide the key" : "Show the key"
+                foreground: root.dim
+                fontFamily: root.fontFamily
+                fontSize: Style.font.body
+                onClicked: settingsView.showKey = !settingsView.showKey
+              }
+            }
+
+            RowLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(6)
+
+              Button {
+                text: "Save"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: settingsView.saveKey()
+              }
+
+              Button {
+                visible: root.apiKey !== ""
+                text: "Remove"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: { apiKeyField.text = ""; settingsView.saveKey() }
+              }
+
+              Text {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: settingsView.keyStatus !== "" ? settingsView.keyStatus : root.apiKey !== "" ? "A key is saved." : "No key saved."
+                color: /look like/.test(settingsView.keyStatus) ? root.dangerColor : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.Wrap
+              }
+            }
+
+            SettingsNote { text: "Keep it private: it's saved in ~/.config/omarchy/shell.json with this widget's other settings." }
+
+            // ----- Steam control -----
+            SettingsHeader { text: "Steam control" }
+
+            SettingsNote {
+              visible: root.controllable
+              text: "Connected through Steam's debugging port: live friends, groups and chat, and installing, pausing and resuming from here. While it's on, any program on this computer can control Steam through localhost:8080."
+            }
+
+            DebugNotice {
+              Layout.fillWidth: true
+              visible: !root.controllable
+              closable: false
+            }
+
+            // ----- layout -----
+            SettingsHeader { text: "Layout" }
+
+            RowLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(10)
+
+              Text {
+                text: "Menu"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              ButtonGroup {
+                Layout.fillWidth: true
+                focusable: false
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                value: root.railTop ? "top" : "left"
+                options: [
+                  { value: "left", label: "On the left" },
+                  { value: "top", label: "Across the top" }
+                ]
+                onChanged: function(v) { root.savePref("menuPosition", v) }
+              }
+            }
+
+            SettingsToggle {
+              label: "Open on the first tab"
+              checked: root.openFirstTab
+              onToggled: root.savePref("openFirstTab", !root.openFirstTab)
+            }
+
+            SettingsNote {
+              text: "Drag the tabs in the menu to reorder them" + (root.openFirstTab ? "; the first one opens when you open Steam." : ". Off, it opens where you left it.")
+                + " Now: " + root.tabOrder.map(function(t) { return root.tabInfo[t].label }).join(" · ")
+            }
+
+            Button {
+              visible: root.tabOrder.join() !== root.allTabs.join()
+              text: "Reset tab order"
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.bodySmall
+              onClicked: root.savePref("tabOrder", root.allTabs)
+            }
+
+            // ----- library -----
+            SettingsHeader { text: "Library" }
+
+            RowLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(6)
+
+              Text {
+                Layout.fillWidth: true
+                text: "Games in Recent"
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+              }
+
+              PanelActionButton {
+                iconText: "󰍴"
+                tooltipText: "Fewer"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.savePref("recentCount", Math.max(3, root.recentCount - 1))
+              }
+
+              Text {
+                Layout.preferredWidth: Style.space(24)
+                horizontalAlignment: Text.AlignHCenter
+                text: root.recentCount
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+              }
+
+              PanelActionButton {
+                iconText: "󰐕"
+                tooltipText: "More"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: root.savePref("recentCount", Math.min(30, root.recentCount + 1))
+              }
+            }
+
+            SettingsToggle {
+              label: "Start with Installed ticked"
+              checked: root.installedByDefault
+              onToggled: { root.savePref("installedByDefault", !root.installedByDefault) }
+            }
+
+            Text {
+              text: "Install new games to"
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+            }
+
+            TextField {
+              id: driveField
+              Layout.fillWidth: true
+              placeholderText: "Steam's default folder"
+              foreground: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              onEditingFinished: if (text.trim() !== root.installDrive) root.savePref("installDrive", text.trim())
+              Keys.onEscapePressed: keyCatcher.forceActiveFocus()
+            }
+
+            SettingsNote {
+              text: "Part of a Steam library folder's path, e.g. GAMES for /run/media/you/GAMES/SteamLibrary."
+                + (root.folders.length ? " Yours: " + root.folders.map(function(f) { return f.path }).join(", ") : "")
+            }
+
+            // ----- friends and chat -----
+            SettingsHeader { text: "Friends and chat" }
+
+            SettingsToggle {
+              label: "Show offline friends"
+              checked: root.showOfflineFriends
+              onToggled: root.savePref("showOfflineFriends", !root.showOfflineFriends)
+            }
+
+            SettingsToggle {
+              label: "Show Steam names beside nicknames"
+              checked: root.showSteamNames
+              onToggled: root.savePref("showSteamNames", !root.showSteamNames)
+            }
+
+            SettingsToggle {
+              label: "Open chats in their own window"
+              checked: root.chatInWindow
+              onToggled: root.savePref("chatInWindow", !root.chatInWindow)
+            }
+
+            SettingsToggle {
+              label: "Show the time on each message"
+              checked: root.showMessageTimes
+              onToggled: root.savePref("showMessageTimes", !root.showMessageTimes)
+            }
+
+            // ----- cache -----
+            SettingsHeader { text: "Cache" }
+
+            SettingsNote {
+              text: "The last friend list (shown while the live one loads), store lists and pages, and details looked up for shared links, in ~/.cache/blip-steam."
+            }
+
+            RowLayout {
+              spacing: Style.space(8)
+
+              Button {
+                text: "Clear cached data"
+                bordered: true
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.bodySmall
+                onClicked: {
+                  Quickshell.execDetached(["python3", root.script, "clear-cache"])
+                  settingsView.cacheCleared = true
+                }
+              }
+
+              Text {
+                visible: settingsView.cacheCleared
+                text: "Cleared"
+                color: root.onlineColor
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+
+            // ----- about -----
+            SettingsHeader { text: "About" }
+
+            Text {
+              Layout.fillWidth: true
+              textFormat: Text.StyledText
+              text: "Steam for Omarchy · <a href=\"https://github.com/BlippyOhNo/omarchy-steambar\">github.com/BlippyOhNo/omarchy-steambar</a>"
+              color: root.dim
+              linkColor: root.onlineColor
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
+              onLinkActivated: function(link) { Qt.openUrlExternally(link) }
+              HoverHandler { cursorShape: parent.hoveredLink !== "" ? Qt.PointingHandCursor : Qt.ArrowCursor }
+            }
+          }
+        }
+
         ListView {
           id: list
+          visible: root.tab !== "settings"
           Layout.fillWidth: true
           Layout.fillHeight: true
           clip: true
@@ -3237,7 +3744,7 @@ Panel {
                 anchors.leftMargin: Style.space(6)
                 anchors.right: parent.right
                 anchors.baseline: nameLabel.baseline
-                visible: !!f.friend && !!f.friend.personaName
+                visible: root.showSteamNames && !!f.friend && !!f.friend.personaName
                 textFormat: Text.PlainText
                 text: f.friend ? f.friend.personaName || "" : ""
                 color: root.dim
@@ -3777,7 +4284,7 @@ Panel {
     readonly property real stampGap: Style.space(8)
     // The time sits on the text's line when a one-line message leaves room,
     // otherwise on a line of its own at the bubble's bottom right.
-    readonly property bool stampInline: !cards.length && !!message
+    readonly property bool stampInline: root.showMessageTimes && !cards.length && !!message
       && String(message.html !== undefined ? message.html : message.text).search(/<br>|\n/) < 0
       && msgText.implicitWidth + stampGap + stamp.implicitWidth <= cb.width * 0.82 - padX * 2
     signal reactionClicked(var reaction)
@@ -3801,7 +4308,7 @@ Panel {
       width: cb.cards.length ? Math.min(cb.width * 0.82, Style.space(300))
         : cb.stampInline ? msgText.implicitWidth + cb.stampGap + stamp.implicitWidth + cb.padX * 2
         : Math.min(Math.max(msgText.implicitWidth, stamp.implicitWidth) + cb.padX * 2, cb.width * 0.82)
-      height: content.implicitHeight + cb.padY * 2 + (cb.stampInline ? 0 : stamp.implicitHeight + Style.space(2))
+      height: content.implicitHeight + cb.padY * 2 + (cb.stampInline || !root.showMessageTimes ? 0 : stamp.implicitHeight + Style.space(2))
       radius: Style.space(10)
       color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, cb.mine ? 0.18 : 0.07)
       border.width: cb.message && cb.message.failed ? 1 : 0
@@ -3810,6 +4317,7 @@ Panel {
 
       Text {
         id: stamp
+        visible: root.showMessageTimes
         anchors.right: parent.right
         anchors.rightMargin: cb.padX
         anchors.bottom: parent.bottom

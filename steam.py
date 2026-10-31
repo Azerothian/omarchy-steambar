@@ -5,6 +5,7 @@
   steam.py friends  -> {"friends": [...]}                 (live online status)
   steam.py friends-cached -> {"friends", "groups", "saved", "collapsed"}  (the last list seen, instantly)
   steam.py set-collapsed '["3", "offline"]'  -> remember which friend groups are minimised
+  steam.py clear-cache    -> empty ~/.cache/blip-steam (keeps minimised groups)
   steam.py downloads -> {"downloads": [...]}              (active/paused downloads)
   steam.py storelists -> {"top": ..., "upcoming": ..., "new": ...}  (the store's lists, 50 each)
   steam.py store APPID -> {...}                           (a game's store page)
@@ -464,6 +465,20 @@ def friends():
         out["error"] = error
     cache.save_friends(people, [])
     return out
+
+
+def clear_cache():
+    """Empty the cache: the SQLite data, the store's saved lists and pages,
+    and their converted art."""
+    cache.clear()
+    removed = 0
+    for folder in (CACHE, os.path.join(CACHE, "store"), os.path.join(CACHE, "store", "img")):
+        for name in os.listdir(folder) if os.path.isdir(folder) else []:
+            path = os.path.join(folder, name)
+            if os.path.isfile(path) and name.endswith((".json", ".webp", ".png", ".jpg")):
+                os.remove(path)
+                removed += 1
+    return {"cleared": removed}
 
 
 # ---------- downloads ----------
@@ -1009,6 +1024,7 @@ if __name__ == "__main__":
         result = (store_page(int(sys.argv[2])) if mode == "store"
                   else friends() if mode == "friends" else cache.load_friends() if mode == "friends-cached"
                   else cache.save_collapsed(seq(json.loads(sys.argv[2]), 500)) or {} if mode == "set-collapsed"
+                  else clear_cache() if mode == "clear-cache"
                   else downloads() if mode == "downloads"
                   else store_lists() if mode == "storelists" else games())
     except Exception as e:  # report instead of crashing the widget

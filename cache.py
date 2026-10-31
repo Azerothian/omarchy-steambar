@@ -132,3 +132,15 @@ def save_embed(key, info):
                        (str(key), json.dumps(info, ensure_ascii=False), int(time.time())))
     except (sqlite3.Error, OSError):
         pass
+
+
+def clear():
+    """Forget everything cached (the friend list, statuses, looked-up links),
+    keeping only which friend groups are minimised."""
+    try:
+        with connect() as db:
+            for table in ("friends", "friend_groups", "profile_status", "apps", "embeds"):
+                db.execute("DELETE FROM %s" % table)
+            db.execute("DELETE FROM meta WHERE key != 'groups_collapsed'")
+    except (sqlite3.Error, OSError):
+        pass

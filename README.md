@@ -50,19 +50,29 @@ pause/resume is hidden.
 
 ## Settings
 
-In the widget's settings:
+The **Settings** tab (the gear at the end of the menu, or `5`) saves as you go, into this widget's
+entry in `~/.config/omarchy/shell.json`:
 
-- **Games in Recent**: how many recently played games to show.
-- **Install new games to**: text matched against your Steam library folders' paths (e.g. `GAMES`
-  for `/run/media/you/GAMES/SteamLibrary`). Empty uses Steam's default folder.
-- **Steam Web API key** (optional, from [steamcommunity.com/dev/apikey](https://steamcommunity.com/dev/apikey)):
-  faster, exact friend status. Without one, status is read from each friend's public profile.
+- **Steam Web API key** (optional), with steps and a link to
+  [steamcommunity.com/dev/apikey](https://steamcommunity.com/dev/apikey): your exact friend list and
+  status in one request when the debugging port is off, instead of reading public profiles.
+- **Steam control**: whether the debugging port is connected, and if not, what's limited and the
+  command to turn it on.
+- **Layout**: the menu on the left or across the top; open on the first tab (on by default).
+  Drag the tabs in the menu to reorder them.
+- **Library**: games in Recent, start with **Installed** ticked, and the folder to install new games
+  to (text matched against your Steam library folders' paths, e.g. `GAMES` for
+  `/run/media/you/GAMES/SteamLibrary`; empty uses Steam's default).
+- **Friends and chat**: show offline friends, Steam names beside nicknames, open chats in their own
+  window, the time on each message.
+- **Cache**: clear what's kept in `~/.cache/blip-steam`.
 
 ## Keys
 
 | Key | Action |
 | --- | --- |
-| `1`–`4` | Store, Recent, Library, Friends |
+| `1`–`4` | The tabs, in the menu's order |
+| `5` | Settings |
 | `←` `→` | Previous/next list or tab (flip media when a store page is open) |
 | `↑` `↓`, `Enter` | Move, then play / install / open |
 | `i` | Store page for the selected game |

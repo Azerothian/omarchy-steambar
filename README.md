@@ -11,15 +11,14 @@ A bar widget for [Omarchy](https://omarchy.org)'s shell that puts Steam in a pop
   Click a game you don't own (or press `i` on any game) to open its store page right in the
   popup: trailers and screenshots, description, reviews, tags, Steam Deck status, system
   requirements and the most helpful reviews. Buying opens Steam.
-- **Recent**: your recently played, installed games. Click to play.
-- **Library**: everything you own, searchable (`/`). With other computers signed in to Steam, the
-  list starts with a **Remote Play** section, like a friend group (minimise it from its header, or
-  tick its box for icons): a row per computer with how many of your games it can stream; click one
-  to Remote Play its desktop.
-  One line of chips filters the list: **Installed** (on by default, and including games installed
-  on your other computers), **Uninstalled**, **Most played** and **Group by computer** as icons,
-  then This PC and a chip per computer to show only its games (click again for all). Click a game
-  to play or stream it, or hover to pick another computer or install here.
+- **Library**: everything you own, searchable (`/`). It starts with **Recent** (the games you
+  played last, here or to stream) and, with other computers signed in to Steam, **Remote Play**: a
+  row per computer with how many of your games it can stream; click one to Remote Play its
+  desktop. Both minimise from their header like a friend group, and Remote Play's box shows its
+  computers as icons. One line of chips filters the games: **Installed** (on by default, and
+  including games installed on your other computers), **Uninstalled**, **Most played** and **Group
+  by computer** as icons, then This PC and a chip per computer to show only its games (click again
+  for all). Click a game to play or stream it, or hover to pick another computer or install here.
 - **Groups**: your Steam group chats (named groups, Steam group chats and chats with several
   friends), newest first, with unread counts. Open one to see its members as avatars (online first),
   read and write in it, switch between its rooms, or pop it out into its own window. Needs Steam's debugging port.
@@ -87,8 +86,8 @@ entry in `~/.config/omarchy/shell.json`:
 
 | Key | Action |
 | --- | --- |
-| `1`–`5` | The tabs, in the menu's order |
-| `6` or `,` | Settings |
+| `1`–`4` | The tabs, in the menu's order |
+| `5` or `,` | Settings |
 | `←` `→` | Previous/next list or tab (flip media when a store page is open) |
 | `↑` `↓`, `Enter` | Move, then play / install / open |
 | `i` | Store page for the selected game |
@@ -103,7 +102,7 @@ From a script or keybinding:
 
 ```sh
 omarchy-shell blip.steam toggle
-omarchy-shell blip.steam tab store        # store | recent | library | friends | groups | settings
+omarchy-shell blip.steam tab store        # store | library | friends | groups | settings
 omarchy-shell blip.steam store 1091500    # open a game's store page by app id
 omarchy-shell blip.steam popout 12345678  # chat with a friend (by account id) in its own window
 omarchy-shell blip.steam groupchat 50739  # open a group chat (by group id)

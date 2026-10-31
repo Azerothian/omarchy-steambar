@@ -43,7 +43,7 @@ Panel {
     Quickshell.execDetached(["omarchy-shell", "-q", "shell", "setBarWidget", "blip.steam", name, json, "{}"])
   }
 
-  readonly property var allTabs: ["store", "recent", "library", "friends", "groups"]
+  readonly property var allTabs: ["store", "library", "friends", "groups"]
   // Your order from dragging the tabs; the first opens with the popup.
   readonly property var tabOrder: {
     var saved = pref("tabOrder", null), out = []
@@ -169,7 +169,7 @@ Panel {
   readonly property var recentGames: {
     var out = []
     for (var i = 0; i < games.length && out.length < recentCount; i++)
-      if (games[i].lastPlayed > 0 && games[i].installed) out.push(games[i])
+      if (games[i].lastPlayed > 0 && (games[i].installed || streamable(games[i]))) out.push(games[i])
     return out
   }
 
@@ -196,7 +196,7 @@ Panel {
     if (!remoteDevices.length) return []
     var collapsed = !!collapsedGroups.remoteplay
     var out = [{ isHeader: true, sectionId: "remoteplay", name: "Remote Play", count: remoteDevices.length,
-                 collapsible: true, collapsed: collapsed, first: true }]
+                 collapsible: true, collapsed: collapsed, first: !recentRows.length }]
     var devices = remoteDevices.map(function(d) {
       return { isDevice: true, device: d, count: games.filter(function(g) {
         return (remoteApps[String(g.appid)] || []).indexOf(d.id) >= 0 }).length }
@@ -206,9 +206,21 @@ Panel {
   }
 
   // Under Remote Play, an ungrouped list gets a header of its own.
-  readonly property var libraryGames: !remotePlayRows.length || !libraryList.length || libraryList[0].isHeader
-    ? remotePlayRows.concat(libraryList)
-    : remotePlayRows.concat([{ isHeader: true, sectionId: "games", name: "Games", count: libraryList.length }], libraryList)
+  // Recently played heads the library (above Remote Play), minimising like
+  // a friend group; hidden while searching.
+  readonly property var recentRows: {
+    if (!recentGames.length || filterText.trim() !== "") return []
+    var collapsed = !!collapsedGroups.recent
+    return [{ isHeader: true, sectionId: "recent", name: "Recent", count: recentGames.length,
+              collapsible: true, collapsed: collapsed, first: true }].concat(collapsed ? [] : recentGames)
+  }
+
+  readonly property var libraryHead: recentRows.concat(remotePlayRows)
+
+  // Under those, an ungrouped list gets a header of its own.
+  readonly property var libraryGames: !libraryHead.length || !libraryList.length || libraryList[0].isHeader
+    ? libraryHead.concat(libraryList)
+    : libraryHead.concat([{ isHeader: true, sectionId: "games", name: "Games", count: libraryList.length }], libraryList)
 
   readonly property var libraryList: {
     var q = filterText.trim().toLowerCase()
@@ -239,7 +251,7 @@ Panel {
       sections.forEach(function(sec) {
         if (!sec.list.length || (only !== "" && only !== sec.id)) return
         out.push({ isHeader: true, name: sec.name, count: sec.list.length, sectionId: sec.id,
-                   first: out.length === 0 && !remoteDevices.length })
+                   first: out.length === 0 && !remoteDevices.length && !recentGames.length })
         out = out.concat(sec.list.sort(byName))
       })
       return out
@@ -331,7 +343,7 @@ Panel {
     return out
   }
 
-  readonly property var rows: tab === "recent" ? recentGames : tab === "library" ? libraryGames
+  readonly property var rows: tab === "library" ? libraryGames
     : tab === "store" ? storeRows : tab === "friends" ? friendRows : tab === "groups" ? groupRows : []
 
   // Active/queued/paused downloads from `steam.py downloads`, each with a
@@ -1117,7 +1129,6 @@ Panel {
     : savedSize("listWidth", railTop ? Style.space(410) : railWidth + Style.space(340), minList)
   readonly property var tabInfo: ({
     store: { icon: "󰓜", label: "Store" },
-    recent: { icon: "󰋚", label: "Recent" },
     library: { icon: "󰓓", label: "Library" },
     friends: { icon: "󰡉", label: "Friends" },
     groups: { icon: "󰭹", label: "Groups" },
@@ -1722,7 +1733,8 @@ Panel {
     function show(): void { root.mainInstance().open() }
     function hide(): void { var items = root.instances(); for (var i = 0; i < items.length; i++) items[i].close() }
     function toggle(): void { root.mainInstance().toggle() }
-    function tab(name: string): void { var t = root.mainInstance(); t.keepTab = true; t.tab = name; t.open() }
+    // Recent is a section of the library now.
+    function tab(name: string): void { var t = root.mainInstance(); t.keepTab = true; t.tab = name === "recent" ? "library" : name; t.open() }
     function chat(account: string): void {
       var t = root.mainInstance()
       for (var i = 0; i < t.friends.length; i++)
@@ -3441,7 +3453,7 @@ Panel {
             // Leave a gutter for the scrollbar so it doesn't sit on the row's buttons.
             width: list.width - (list.contentHeight > list.height ? listBar.width + Style.space(2) : 0)
             sourceComponent: root.tab === "friends" ? (modelData && modelData.isIconBar ? friendIconBar : friendRow)
-              : root.tab === "groups" ? groupRow : root.tab === "recent" ? recentRow
+              : root.tab === "groups" ? groupRow
               : root.tab === "store" ? storeRow : modelData && modelData.isHeader ? libraryHeader
               : modelData && modelData.isDevice ? deviceRow : modelData && modelData.isDeviceBar ? deviceBar : libraryRow
             property var entry: modelData
@@ -3466,7 +3478,7 @@ Panel {
               : root.tab === "library" && root.filterText !== "" ? "No games match “" + root.filterText + "”"
               : root.tab === "library" && root.installedOnly && !root.mostPlayed ? "No installed games. Untick Installed to see all " + root.games.length + "."
               : root.tab === "library" && (root.mostPlayed || root.installedOnly || root.uninstalledOnly) ? "No games match these filters"
-              : root.tab === "recent" ? "No recently played games" : "No games"
+              : "No games"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
@@ -4195,85 +4207,6 @@ Panel {
   }
 
   // ---------- rows ----------
-  // Recent: the game's wide header art, when you last played, and total time.
-  Component {
-    id: recentRow
-    RowSurface {
-      id: r
-      readonly property var game: parent ? parent.entry : null
-      rowIdx: parent ? parent.rowIdx : 0
-      implicitHeight: Style.space(58)
-
-      RowLayout {
-        anchors.fill: parent
-        anchors.leftMargin: Style.space(6)
-        anchors.rightMargin: Style.space(8)
-        spacing: Style.space(10)
-
-        Item {
-          Layout.preferredWidth: Style.space(98)
-          Layout.preferredHeight: Style.space(46)
-
-          ClippingRectangle {
-            anchors.fill: parent
-            radius: Style.space(4)
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
-            opacity: r.game && root.uninstalling[r.game.appid] ? 0.4 : 1
-
-            Image {
-              anchors.fill: parent
-              source: r.game ? root.imageSource(r.game.header) : ""
-              sourceSize.width: 196
-              fillMode: Image.PreserveAspectCrop
-              asynchronous: true
-              cache: true
-            }
-          }
-        }
-
-        ColumnLayout {
-          Layout.fillWidth: true
-          spacing: Style.space(2)
-
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: r.game ? r.game.name : ""
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            font.bold: true
-            elide: Text.ElideRight
-          }
-
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: !r.game ? "" : root.uninstalling[r.game.appid] ? "Uninstalling…"
-              : [root.playedLabel(r.game.lastPlayed), root.playtimeLabel(r.game.playtime)]
-              .filter(function(x) { return !!x }).join(" · ")
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            elide: Text.ElideRight
-          }
-        }
-
-        UninstallBadge {
-          game: r.game
-          rowActive: r.hasCursor
-        }
-
-        Text {
-          text: r.game && !r.game.installed ? "󰇚" : "󰐊"
-          color: r.hasCursor ? root.foreground : root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.icon
-        }
-      }
-    }
-  }
-
   // A row of icons (a friend group, a group chat's members, Remote Play)
   // that scrolls sideways when it's longer than the space: the wheel or a
   // touchpad scrolls it (only then, so otherwise the list scrolls), and it

@@ -498,6 +498,31 @@ Panel {
         wrapMode: Text.Wrap
       }
 
+      // Start Steam, or restart it once the flag file is in place.
+      RowLayout {
+        visible: !root.steamRunning || root.debugFlag
+        spacing: Style.space(8)
+
+        Button {
+          enabled: !root.steamStarting
+          text: root.steamStarting ? "Starting…" : root.steamRunning ? "Restart Steam" : "Start Steam"
+          iconText: root.steamStarting ? "" : "󰓓"
+          bordered: true
+          foreground: root.foreground
+          fontFamily: root.fontFamily
+          fontSize: Style.font.bodySmall
+          onClicked: root.steamRunning ? root.restartSteam() : root.startSteam()
+        }
+
+        Text {
+          visible: root.steamRunning && !root.steamStarting
+          text: "Closes any game running in Steam."
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+
       RowLayout {
         Layout.fillWidth: true
         visible: root.steamRunning && !root.debugFlag && root.debugFlagPath !== ""
@@ -689,7 +714,7 @@ Panel {
     })
   }
 
-  onControllableChanged: if (controllable) refreshFriends()
+  onControllableChanged: if (controllable) { refreshFriends(); steamStarting = false }
 
   // ---------- chat ----------
   // Clicking a friend widens the popup to the right with a chat pane that
@@ -927,6 +952,36 @@ Panel {
   // Native `steam` when installed, otherwise the Flatpak.
   readonly property var steamCommand: ["sh", "-c",
     "if command -v steam >/dev/null; then exec steam \"$@\"; else exec flatpak run com.valvesoftware.Steam \"$@\"; fi", "steam"]
+
+  // From the debugging notice: start Steam, or restart it so it opens the
+  // port. "Starting…" shows until the next check sees it (or a minute passes).
+  property bool steamStarting: false
+
+  function startSteam() {
+    steamStarting = true
+    steamStartTimeout.restart()
+    Quickshell.execDetached(steamCommand)
+    refreshSoon.restart()
+  }
+
+  function restartSteam() {
+    steamStarting = true
+    steamStartTimeout.restart()
+    Quickshell.execDetached(["sh", "-c",
+      "if command -v steam >/dev/null; then s=steam; else s='flatpak run com.valvesoftware.Steam'; fi; " +
+      "$s -shutdown; i=0; while pgrep -x steam >/dev/null && [ $i -lt 60 ]; do sleep 0.5; i=$((i+1)); done; exec $s"])
+    refreshSoon.restart()
+  }
+
+  Timer { id: steamStartTimeout; interval: 60000; onTriggered: root.steamStarting = false }
+  // Check back every few seconds while Steam comes up, so the notice clears.
+  Timer {
+    id: refreshSoon
+    interval: 3000
+    repeat: true
+    running: false
+    onTriggered: { root.refreshDownloads(); if (!root.steamStarting) stop() }
+  }
 
   function launch(command) {
     Quickshell.execDetached(steamCommand.concat([command]))

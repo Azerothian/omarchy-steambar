@@ -166,6 +166,12 @@ Panel {
   readonly property color dangerColor: "#e0524d"
   readonly property color warnColor: "#e0a84d"
 
+  // The bar button's middle-click plays the last game you can run here.
+  readonly property var lastInstalled: {
+    for (var i = 0; i < games.length; i++) if (games[i].lastPlayed > 0 && games[i].installed) return games[i]
+    return null
+  }
+
   readonly property var recentGames: {
     var out = []
     for (var i = 0; i < games.length && out.length < recentCount; i++)
@@ -196,33 +202,45 @@ Panel {
     if (!remoteDevices.length) return []
     var collapsed = !!collapsedGroups.remoteplay
     var out = [{ isHeader: true, sectionId: "remoteplay", name: "Remote Play", count: remoteDevices.length,
-                 collapsible: true, collapsed: collapsed, first: !recentRows.length }]
-    var devices = remoteDevices.map(function(d) {
-      return { isDevice: true, device: d, count: games.filter(function(g) {
-        return (remoteApps[String(g.appid)] || []).indexOf(d.id) >= 0 }).length }
-    })
+                 collapsible: true, collapsed: collapsed }]
+    var devices = remoteDevices.map(function(d) { return { isDevice: true, device: d, count: pcCounts[d.id] || 0 } })
     if (!collapsed) out = out.concat(remotePlayIcons ? [{ isDeviceBar: true, devices: devices }] : devices)
     return out
   }
 
-  // Under Remote Play, an ungrouped list gets a header of its own.
-  // Recently played heads the library (above Remote Play), minimising like
-  // a friend group; hidden while searching.
-  // The library's Recent: your latest games that pass its filters (the
-  // search, Installed / Uninstalled / Most played, the computer chip), up
-  // to "Games in Recent". The bar button's last-played uses recentGames.
+  // How many of your games each computer has: "local" for this one, and
+  // each Remote Play computer by id.
+  readonly property var pcCounts: {
+    var out = { local: 0 }
+    for (var i = 0; i < games.length; i++) {
+      if (games[i].installed) out.local++
+      var on = remoteApps[String(games[i].appid)] || []
+      for (var j = 0; j < on.length; j++) out[on[j]] = (out[on[j]] || 0) + 1
+    }
+    return out
+  }
+
+  // The library's search and chips (Installed counts games you can stream
+  // from another computer too); `here` is whether g plays here or streams.
+  function passesFilters(g, here, q) {
+    if (q !== "" && g.name.toLowerCase().indexOf(q) < 0) return false
+    if (installedOnly && !here) return false
+    if (uninstalledOnly && here) return false
+    if (mostPlayed && !(g.playtime > 0)) return false
+    return true
+  }
+
+  // The library's Recent: your latest games that pass its filters (and the
+  // computer chip), up to "Games in Recent". It heads the library, above
+  // Remote Play, and minimises like a friend group.
   readonly property var recentFiltered: {
     var q = filterText.trim().toLowerCase()
     var pc = hasStreams ? libraryPc : ""
     var device = remoteDevices.filter(function(d) { return d.id === pc })[0]
     var out = []
     for (var i = 0; i < games.length && out.length < recentCount; i++) {
-      var g = games[i], here = g.installed || streamable(g)
-      if (!(g.lastPlayed > 0)) continue
-      if (q !== "" && g.name.toLowerCase().indexOf(q) < 0) continue
-      if (installedOnly && !here) continue
-      if (uninstalledOnly && here) continue
-      if (mostPlayed && !(g.playtime > 0)) continue
+      var g = games[i]
+      if (!(g.lastPlayed > 0) || !passesFilters(g, g.installed || streamable(g), q)) continue
       if (pc === "local" && !g.installed) continue
       if (device && (remoteApps[String(g.appid)] || []).indexOf(device.id) < 0) continue
       out.push(device ? Object.assign({}, g, { streamDevice: device }) : g)
@@ -235,7 +253,7 @@ Panel {
     if (!recentFiltered.length) return []
     var collapsed = !!collapsedGroups.recent
     return [{ isHeader: true, sectionId: "recent", name: "Recent", count: recentFiltered.length,
-              collapsible: true, collapsed: collapsed, first: true }].concat(collapsed ? [] : recentFiltered)
+              collapsible: true, collapsed: collapsed }].concat(collapsed ? [] : recentFiltered)
   }
 
   readonly property var libraryHead: recentRows.concat(remotePlayRows)
@@ -245,13 +263,19 @@ Panel {
     ? libraryHead.concat(libraryList)
     : libraryHead.concat([{ isHeader: true, sectionId: "games", name: "Games", count: libraryList.length }], libraryList)
 
-  // Panel view: each section's games as one wrapping grid of icons (click
-  // one for its options); the list view keeps a row per game.
+  // Panel view: each section's games as covers in rows that fill the width
+  // (click one for its options); the list view keeps a row per game. Each
+  // line of covers is its own list row, so only the ones on screen exist.
   readonly property bool libraryPanels: pref("libraryView", "list") === "panels"
+  readonly property int gridColumns: Math.max(1, Math.floor(
+    (list.width - Style.space(12) - listBar.width - Style.space(2) + Style.space(6)) / (Style.space(62) + Style.space(6))))
   readonly property var libraryGames: {
     if (!libraryPanels) return libraryRowsFlat
-    var out = [], run = []
-    function flush() { if (run.length) { out.push({ isGameGrid: true, games: run }); run = [] } }
+    var out = [], run = [], cols = gridColumns
+    function flush() {
+      for (var i = 0; i < run.length; i += cols) out.push({ isGameGrid: true, games: run.slice(i, i + cols), columns: cols })
+      run = []
+    }
     libraryRowsFlat.forEach(function(r) {
       if (r.isHeader || r.isDevice || r.isDeviceBar) { flush(); out.push(r) } else run.push(r)
     })
@@ -269,14 +293,7 @@ Panel {
 
   readonly property var libraryList: {
     var q = filterText.trim().toLowerCase()
-    function keep(g, here) {
-      if (q !== "" && g.name.toLowerCase().indexOf(q) < 0) return false
-      // Installed counts games you can stream from another computer too.
-      if (installedOnly && !here) return false
-      if (uninstalledOnly && here) return false
-      if (mostPlayed && !(g.playtime > 0)) return false
-      return true
-    }
+    function keep(g, here) { return passesFilters(g, here, q) }
     function byName(a, b) {
       if (mostPlayed && a.playtime !== b.playtime) return b.playtime - a.playtime
       return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1
@@ -295,8 +312,7 @@ Panel {
       var out = []
       sections.forEach(function(sec) {
         if (!sec.list.length || (only !== "" && only !== sec.id)) return
-        out.push({ isHeader: true, name: sec.name, count: sec.list.length, sectionId: sec.id,
-                   first: out.length === 0 && !remoteDevices.length && !recentRows.length })
+        out.push({ isHeader: true, name: sec.name, count: sec.list.length, sectionId: sec.id })
         out = out.concat(sec.list.sort(byName))
       })
       return out
@@ -306,10 +322,12 @@ Panel {
       : only !== "" ? from(games.filter(function(g) { return onPc(g, only) && keep(g, true) }),
                            pcs.filter(function(d) { return d.id === only })[0])
       : games.filter(function(g) { return keep(g, g.installed || streamable(g)) })
-    // Installed here, then streamable, then the rest.
+    // Installed here, then streamable, then the rest (each game's rank
+    // worked out once, not on every comparison).
+    var rank = {}
+    flat.forEach(function(g) { rank[g.appid] = g.installed ? 0 : streamable(g) ? 1 : 2 })
     return flat.sort(function(a, b) {
-      var ra = a.installed ? 0 : streamable(a) ? 1 : 2, rb = b.installed ? 0 : streamable(b) ? 1 : 2
-      if (!mostPlayed && ra !== rb) return ra - rb
+      if (!mostPlayed && rank[a.appid] !== rank[b.appid]) return rank[a.appid] - rank[b.appid]
       return byName(a, b)
     })
   }
@@ -318,11 +336,9 @@ Panel {
   // those rows act like library rows.
   readonly property var storeRows: {
     var list = storeLists[storeKind] && storeLists[storeKind].games ? storeLists[storeKind].games : []
-    var mine = {}
-    for (var i = 0; i < games.length; i++) mine[games[i].appid] = games[i]
     var out = []
     for (var j = 0; j < list.length; j++) {
-      var p = list[j], g = mine[p.appid]
+      var p = list[j], g = gamesById[p.appid]
       out.push(Object.assign({}, p, { owned: !!g, installed: !!g && g.installed, icon: g ? g.icon : "" }))
     }
     return out
@@ -376,7 +392,7 @@ Panel {
       // While searching, every match shows, minimised group or not.
       var collapsed = !!collapsedGroups[sec.id] && q === ""
       out.push({
-        isHeader: true, sectionId: sec.id, name: sec.name, collapsed: collapsed, first: out.length === 0,
+        isHeader: true, sectionId: sec.id, name: sec.name, collapsed: collapsed,
         icons: !!sec.icons,
         count: sec === online ? String(n) : sec === offline ? String(sec.members.length) : n + "/" + sec.members.length,
       })
@@ -985,7 +1001,7 @@ Panel {
     remoteBusy = true
     runCtl(["remote"], function(ok, value) {
       root.remoteBusy = false
-      if (!ok || !value) return
+      if (!ok || !value || !root.changed("remote", value)) return
       root.remoteDevices = value.devices || []
       root.remoteApps = value.apps || {}
       root.remoteSelected = value.selected || {}
@@ -1050,7 +1066,7 @@ Panel {
         root.friendsCtlBusy = false
         if (!ok) return
         var v = value || []
-        root.keepScroll(function() {
+        if (root.changed("friends", v)) root.keepScroll(function() {
           root.friendGroups = Array.isArray(v) ? [] : v.groups || []
           root.friends = root.sortFriends(Array.isArray(v) ? v : v.friends || [])
         })
@@ -1232,7 +1248,7 @@ Panel {
     runCtl(["groups"], function(ok, value) {
       root.groupsBusy = false
       if (!ok || !Array.isArray(value)) return
-      root.groupChats = value
+      if (root.changed("groups", value)) root.groupChats = value
       if (root.chatGroup) root.chatGroup = root.groupById(root.chatGroup.id) || root.chatGroup
       if (root.pendingGroupChat) {
         var g = root.groupById(root.pendingGroupChat)
@@ -1247,9 +1263,24 @@ Panel {
     return popoutFriends[accountid] || null
   }
 
-  function gameById(appid) {
-    for (var i = 0; i < games.length; i++) if (games[i].appid === appid) return games[i]
-    return null
+  // Games by app id, for lookups from rows, cards and the store lists.
+  readonly property var gamesById: {
+    var out = {}
+    for (var i = 0; i < games.length; i++) out[games[i].appid] = games[i]
+    return out
+  }
+
+  function gameById(appid) { return gamesById[appid] || null }
+
+  // Polls bring the same data back most of the time; replacing a list with
+  // an equal one would still rebuild everything bound to it, so this says
+  // whether `value` differs from the last one seen under `key`.
+  property var seen: ({})
+  function changed(key, value) {
+    var sig = typeof value === "string" ? value : JSON.stringify(value)
+    if (seen[key] === sig) return false
+    seen[key] = sig
+    return true
   }
 
   // Opens the chat in its own window, or brings its window forward
@@ -1388,14 +1419,11 @@ Panel {
   readonly property bool storeOpen: !!storeGame
   readonly property real storeWidth: dragStore >= 0 ? dragStore : savedSize("storeWidth", Style.space(460), minStore)
   readonly property var storeMedia: storePage && storePage.media ? storePage.media : []
-  readonly property var storeOwned: {
-    if (!storeGame) return null
-    for (var i = 0; i < games.length; i++) if (games[i].appid === storeGame.appid) return games[i]
-    return null
-  }
+  readonly property var storeOwned: storeGame ? gameById(storeGame.appid) : null
 
   function openStore(game) {
-    if (!game) return
+    // Only games have store pages (not headers, computers or group chats).
+    if (!game || !game.appid) return
     chatFriend = null
     chatGroup = null
     if (storeGame && storeGame.appid === game.appid) return
@@ -2386,7 +2414,7 @@ Panel {
         try {
           var d = JSON.parse(String(text || "{}"))
           root.errorText = d.error || ""
-          if (d.games) root.games = d.games
+          if (d.games && root.changed("games", d.games)) root.games = d.games
         } catch (e) {
           root.errorText = "Couldn't read your Steam library"
         }
@@ -2463,7 +2491,8 @@ Panel {
           var d = JSON.parse(String(text || "{}"))
           root.friendsError = d.error || ""
           if (d.friends) {
-            root.keepScroll(function() { root.friends = d.friends; root.friendGroups = d.groups || [] })
+            if (root.changed("friends", d.friends))
+              root.keepScroll(function() { root.friends = d.friends; root.friendGroups = d.groups || [] })
             root.friendsCached = false
           }
         } catch (e) {
@@ -2486,10 +2515,10 @@ Panel {
       ? root.activeDownload.name + " · " + (root.activeDownload.status === "downloading" && root.activeDownload.total
           ? Math.floor(root.activeDownload.progress * 100) + "% · " + root.downloadLine(root.activeDownload)
           : root.downloadLine(root.activeDownload))
-      : root.recentGames.length ? "Steam · last played " + root.recentGames[0].name : "Steam"
+      : root.lastInstalled ? "Steam · last played " + root.lastInstalled.name : "Steam"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) Quickshell.execDetached(steamCommand)
-      else if (buttonCode === Qt.MiddleButton && root.recentGames.length) root.launch("steam://rungameid/" + root.recentGames[0].appid)
+      else if (buttonCode === Qt.MiddleButton && root.lastInstalled) root.launch("steam://rungameid/" + root.lastInstalled.appid)
       else { root.reopenUntil = 0; root.toggle() }
     }
   }
@@ -2585,6 +2614,8 @@ Panel {
       MouseArea {
         anchors.fill: parent
         acceptedButtons: Qt.AllButtons
+        // Holds the hover too, so rows behind don't react.
+        hoverEnabled: true
         onClicked: root.closeGameOptions()
       }
 
@@ -2770,6 +2801,8 @@ Panel {
       MouseArea {
         anchors.fill: parent
         acceptedButtons: Qt.AllButtons
+        // Holds the hover too, so rows behind don't react.
+        hoverEnabled: true
         onClicked: root.cancelStream()
       }
 
@@ -2879,7 +2912,7 @@ Panel {
         if (t === "/") root.focusFilter()
         else if (/^[1-9]$/.test(t) && Number(t) <= root.tabOrder.length) root.tab = root.tabOrder[Number(t) - 1]
         else if (Number(t) === root.tabOrder.length + 1 || t === ",") root.tab = "settings"
-        else if (t === "i" && root.tab !== "friends" && root.cursorActive) {
+        else if (t === "i" && root.tab !== "friends" && root.tab !== "groups" && root.cursorActive) {
           if (root.storeOpen) root.closeStore(); else root.openStore(root.rows[root.rowIndex])
         }
         else if (t === "d" && root.downloads.length) root.downloadsExpanded = !root.downloadsExpanded
@@ -3182,7 +3215,7 @@ Panel {
             FilterChip {
               visible: root.hasStreams
               icon: "󰌢"
-              tip: "This PC · " + root.games.filter(function(g) { return g.installed }).length + " installed"
+              tip: "This PC · " + root.pcCounts.local + " installed"
               selected: root.libraryPc === "local"
               onClicked: root.pickPc(root.libraryPc === "local" ? "" : "local")
             }
@@ -3192,8 +3225,7 @@ Panel {
 
               FilterChip {
                 required property var modelData
-                readonly property int count: root.games.filter(function(g) {
-                  return (root.remoteApps[String(g.appid)] || []).indexOf(modelData.id) >= 0 }).length
+                readonly property int count: root.pcCounts[modelData.id] || 0
                 icon: "󰍹"
                 label: modelData.name
                 labelMax: Style.space(84)
@@ -4681,9 +4713,9 @@ Panel {
         y: Style.space(4)
         width: gg.width - Style.space(12)
         spacing: Style.space(6)
-        // As many columns as fit at the smallest size, then the covers
-        // stretch so each row fills the width.
-        readonly property int columns: Math.max(1, Math.floor((width + spacing) / (Style.space(62) + spacing)))
+        // As many columns as fit at the smallest size (worked out with the
+        // rows, the same for each), then the covers stretch to fill the width.
+        readonly property int columns: gg.entry ? gg.entry.columns : 1
         readonly property real tileWidth: Math.floor((width - spacing * (columns - 1)) / columns)
 
         Repeater {
@@ -4804,7 +4836,7 @@ Panel {
       readonly property var entry: parent ? parent.entry : null
       readonly property int entryIdx: parent ? parent.rowIdx : 0
       width: parent ? parent.width : 0
-      implicitHeight: headerSurface.height + (entry && entry.first ? 0 : Style.space(6))
+      implicitHeight: headerSurface.height + (entryIdx === 0 ? 0 : Style.space(6))
 
       RowSurface {
         id: headerSurface
@@ -5334,7 +5366,7 @@ Panel {
       Item {
         width: parent.width
         visible: fc.isHeader
-        height: visible ? headerRow.height + (fc.entry.first ? 0 : Style.space(6)) : 0
+        height: visible ? headerRow.height + (fc.entryIdx === 0 ? 0 : Style.space(6)) : 0
 
         RowSurface {
           id: headerRow

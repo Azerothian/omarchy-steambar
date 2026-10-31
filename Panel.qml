@@ -4629,12 +4629,17 @@ Panel {
         y: Style.space(4)
         width: gg.width - Style.space(12)
         spacing: Style.space(6)
+        // As many columns as fit at the smallest size, then the covers
+        // stretch so each row fills the width.
+        readonly property int columns: Math.max(1, Math.floor((width + spacing) / (Style.space(62) + spacing)))
+        readonly property real tileWidth: Math.floor((width - spacing * (columns - 1)) / columns)
 
         Repeater {
           model: gg.entry ? gg.entry.games : []
           GameTile {
             required property var modelData
             game: modelData
+            width: tileFlow.tileWidth
           }
         }
       }
@@ -4657,6 +4662,8 @@ Panel {
     onGameChanged: art = 0
     width: Style.space(62)
     height: Math.round(width * 1.5)
+    // Bigger covers can use sharper art.
+    readonly property int artWidth: width > Style.space(90) ? 400 : 200
 
     ClippingRectangle {
       anchors.fill: parent
@@ -4669,7 +4676,7 @@ Panel {
       Image {
         anchors.fill: parent
         source: gt.art < gt.sources.length ? root.imageSource(gt.sources[gt.art]) : ""
-        sourceSize.width: 200
+        sourceSize.width: gt.artWidth
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
         onStatusChanged: if (status === Image.Error) gt.art++

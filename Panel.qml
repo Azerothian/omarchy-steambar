@@ -218,9 +218,31 @@ Panel {
   readonly property var libraryHead: recentRows.concat(remotePlayRows)
 
   // Under those, an ungrouped list gets a header of its own.
-  readonly property var libraryGames: !libraryHead.length || !libraryList.length || libraryList[0].isHeader
+  readonly property var libraryRowsFlat: !libraryHead.length || !libraryList.length || libraryList[0].isHeader
     ? libraryHead.concat(libraryList)
     : libraryHead.concat([{ isHeader: true, sectionId: "games", name: "Games", count: libraryList.length }], libraryList)
+
+  // Panel view: each section's games as one wrapping grid of icons (click
+  // one for its options); the list view keeps a row per game.
+  readonly property bool libraryPanels: pref("libraryView", "list") === "panels"
+  readonly property var libraryGames: {
+    if (!libraryPanels) return libraryRowsFlat
+    var out = [], run = []
+    function flush() { if (run.length) { out.push({ isGameGrid: true, games: run }); run = [] } }
+    libraryRowsFlat.forEach(function(r) {
+      if (r.isHeader || r.isDevice || r.isDeviceBar) { flush(); out.push(r) } else run.push(r)
+    })
+    flush()
+    return out
+  }
+
+  // The game whose options are showing (panel view), and whether its
+  // Uninstall has been pressed once.
+  property var gameOptions: null
+  property bool uninstallArmed: false
+
+  function showGameOptions(game) { uninstallArmed = false; gameOptions = game }
+  function closeGameOptions() { gameOptions = null; keyCatcher.forceActiveFocus() }
 
   readonly property var libraryList: {
     var q = filterText.trim().toLowerCase()
@@ -1456,7 +1478,7 @@ Panel {
     else if (root.tab === "store" && !item.owned) openStore(item)
     else if (item.isHeader) { if (item.collapsible) toggleGroup(item.sectionId) }
     else if (item.isDevice) streamDesktop(item.device)
-    else if (item.isDeviceBar) return
+    else if (item.isDeviceBar || item.isGameGrid) return
     else if (item.streamDevice) streamGame(item, item.streamDevice)
     else if (item.installed) launch("steam://rungameid/" + item.appid)
     else if (streamable(item)) streamGame(item, streamDevices(item)[0])
@@ -1913,7 +1935,7 @@ Panel {
   }
 
   onOpenedChanged: {
-    if (!opened) { armedUninstall = 0; chatFriend = null; chatGroup = null; pendingStream = null; closeStore() }
+    if (!opened) { armedUninstall = 0; chatFriend = null; chatGroup = null; pendingStream = null; gameOptions = null; closeStore() }
     if (!opened && Date.now() < reopenUntil) { reopenTimer.restart(); return }
     if (opened && reopening) { reopening = false; return }
     if (opened) {
@@ -2495,6 +2517,195 @@ Panel {
     ResizeGrip { side: "left"; anchors.left: parent.left; anchors.bottom: parent.bottom; z: 20 }
     ResizeGrip { side: "right"; anchors.right: parent.right; anchors.bottom: parent.bottom; z: 20 }
 
+    // Panel view: a game's options (play, stream, install, store page...).
+    Rectangle {
+      id: optionsOverlay
+      anchors.fill: parent
+      z: 49
+      visible: !!root.gameOptions
+      color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 0.75)
+      onVisibleChanged: if (visible) optionsCard.forceActiveFocus()
+
+      readonly property var game: root.gameOptions
+      readonly property var download: game ? root.downloadsById[game.appid] || null : null
+      readonly property var streamFrom: !game ? [] : game.streamDevice ? [game.streamDevice] : root.streamable(game) ? root.streamDevices(game) : []
+
+      MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.AllButtons
+        onClicked: root.closeGameOptions()
+      }
+
+      Rectangle {
+        id: optionsCard
+        anchors.centerIn: parent
+        width: Math.min(parent.width - Style.space(40), Style.space(320))
+        height: Math.min(parent.height - Style.space(40), optionsCol.implicitHeight + Style.space(28))
+        radius: Style.space(8)
+        color: Color.background
+        border.width: 1
+        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
+        clip: true
+        focus: true
+
+        Keys.onPressed: function(event) {
+          if (event.key === Qt.Key_Escape) { root.closeGameOptions(); event.accepted = true }
+        }
+
+        MouseArea { anchors.fill: parent }
+
+        Flickable {
+          anchors.fill: parent
+          anchors.margins: Style.space(14)
+          contentHeight: optionsCol.implicitHeight
+          clip: true
+          boundsBehavior: Flickable.StopAtBounds
+
+          ColumnLayout {
+            id: optionsCol
+            width: parent.width
+            spacing: Style.space(6)
+
+            RowLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(10)
+
+              ClippingRectangle {
+                Layout.preferredWidth: Style.space(36)
+                Layout.preferredHeight: Style.space(36)
+                radius: Style.space(5)
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+
+                Image {
+                  anchors.fill: parent
+                  source: root.gameOptions ? root.imageSource(root.gameOptions.icon) : ""
+                  sourceSize.width: 72
+                  fillMode: Image.PreserveAspectCrop
+                  asynchronous: true
+                }
+              }
+
+              ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Style.space(1)
+
+                Text {
+                  Layout.fillWidth: true
+                  textFormat: Text.PlainText
+                  text: root.gameOptions ? root.gameOptions.name : ""
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
+                  wrapMode: Text.Wrap
+                  maximumLineCount: 2
+                  elide: Text.ElideRight
+                }
+
+                Text {
+                  Layout.fillWidth: true
+                  textFormat: Text.PlainText
+                  text: !root.gameOptions ? "" : [
+                      root.gameOptions.installed ? "Installed" : optionsOverlay.streamFrom.length ? "On " + optionsOverlay.streamFrom[0].name : "Not installed",
+                      root.playtimeLabel(root.gameOptions.playtime) ? root.playtimeLabel(root.gameOptions.playtime) + " played" : ""
+                    ].filter(function(x) { return x !== "" }).join(" · ")
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                }
+              }
+            }
+
+            PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+
+            GameAction {
+              visible: !!root.gameOptions && root.gameOptions.installed
+              icon: "󰐊"
+              label: "Play"
+              onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.launch("steam://rungameid/" + g.appid) }
+            }
+
+            Repeater {
+              model: optionsOverlay.streamFrom
+              GameAction {
+                required property var modelData
+                icon: "󰍹"
+                label: "Stream from " + modelData.name
+                onClicked: {
+                  var g = root.gameOptions
+                  root.closeGameOptions()
+                  root.pendingStream = { device: modelData, game: g }
+                  root.confirmStream()
+                }
+              }
+            }
+
+            GameAction {
+              visible: !!optionsOverlay.download
+              icon: optionsOverlay.download && optionsOverlay.download.status === "paused" ? "󰐊" : "󰏤"
+              label: optionsOverlay.download && optionsOverlay.download.status === "paused" ? "Resume download" : "Pause download"
+              onClicked: root.toggleDownload(optionsOverlay.download)
+            }
+
+            Repeater {
+              model: root.gameOptions && !root.gameOptions.installed && !optionsOverlay.download ? root.folders : []
+              GameAction {
+                required property var modelData
+                icon: "󰇚"
+                label: "Install to " + root.folderName(modelData) + " · " + root.sizeLabel(modelData.free) + " free"
+                onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.installGame(g, modelData) }
+              }
+            }
+
+            GameAction {
+              visible: !!root.gameOptions && !root.gameOptions.installed && !optionsOverlay.download && root.folders.length === 0
+              icon: "󰇚"
+              label: "Install"
+              onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.installGame(g, null) }
+            }
+
+            GameAction {
+              icon: "󰓜"
+              label: "Store page"
+              onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.openStore(g) }
+            }
+
+            GameAction {
+              icon: "󰓓"
+              label: "Open in Steam"
+              onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.launch("steam://nav/games/details/" + g.appid) }
+            }
+
+            GameAction {
+              icon: "󰒓"
+              label: "Properties"
+              onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.launch("steam://gameproperties/" + g.appid) }
+            }
+
+            GameAction {
+              visible: !!root.gameOptions && root.gameOptions.installed && root.controllable
+              icon: "󰆴"
+              label: root.uninstallArmed ? "Click again to uninstall" : "Uninstall"
+              danger: root.uninstallArmed
+              onClicked: {
+                if (!root.uninstallArmed) { root.uninstallArmed = true; return }
+                var g = root.gameOptions
+                root.closeGameOptions()
+                root.uninstallGame(g)
+              }
+            }
+
+            GameAction {
+              icon: "󰅖"
+              label: "Cancel"
+              onClicked: root.closeGameOptions()
+            }
+          }
+        }
+      }
+    }
+
     // Asks before Remote Play starts (a computer's desktop or a game).
     Rectangle {
       anchors.fill: parent
@@ -2598,6 +2809,7 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       blocked: filterField.activeFocus || chatView.inputFocused || apiKeyField.activeFocus || driveField.activeFocus || !!root.pendingStream
+        || !!root.gameOptions
       onMoveRequested: function(dx, dy) {
         if (dx !== 0 && root.storeOpen) root.stepMedia(dx)
         else if (dx !== 0) root.switchTab(dx)
@@ -2870,6 +3082,13 @@ Panel {
           Row {
             id: chipLine
             spacing: Style.space(5)
+
+            FilterChip {
+              icon: root.libraryPanels ? "󰕰" : "󰈚"
+              tip: root.libraryPanels ? "Panel view (click for the list)" : "List view (click for panels)"
+              selected: root.libraryPanels
+              onClicked: root.savePref("libraryView", root.libraryPanels ? "list" : "panels")
+            }
 
             FilterChip {
               icon: "󰄲"
@@ -3455,7 +3674,8 @@ Panel {
             sourceComponent: root.tab === "friends" ? (modelData && modelData.isIconBar ? friendIconBar : friendRow)
               : root.tab === "groups" ? groupRow
               : root.tab === "store" ? storeRow : modelData && modelData.isHeader ? libraryHeader
-              : modelData && modelData.isDevice ? deviceRow : modelData && modelData.isDeviceBar ? deviceBar : libraryRow
+              : modelData && modelData.isDevice ? deviceRow : modelData && modelData.isDeviceBar ? deviceBar
+              : modelData && modelData.isGameGrid ? gameGrid : libraryRow
             property var entry: modelData
             property int rowIdx: index
           }
@@ -4347,6 +4567,152 @@ Panel {
           }
       }
     }
+  }
+
+  // One option in a game's options: icon and label, full width.
+  component GameAction: Rectangle {
+    id: ga
+    property string icon: ""
+    property string label: ""
+    property bool danger: false
+    signal clicked()
+    Layout.fillWidth: true
+    implicitHeight: Style.space(30)
+    radius: Style.space(5)
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, gaMouse.containsMouse ? 0.1 : 0)
+
+    Row {
+      anchors.verticalCenter: parent.verticalCenter
+      x: Style.space(8)
+      spacing: Style.space(10)
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        width: Style.space(16)
+        horizontalAlignment: Text.AlignHCenter
+        text: ga.icon
+        color: ga.danger ? root.dangerColor : root.onlineColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+
+      Text {
+        anchors.verticalCenter: parent.verticalCenter
+        text: ga.label
+        color: ga.danger ? root.dangerColor : root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+    }
+
+    MouseArea {
+      id: gaMouse
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onClicked: ga.clicked()
+    }
+  }
+
+  // Panel view: a section's games as icons that wrap to the width.
+  Component {
+    id: gameGrid
+    Item {
+      id: gg
+      readonly property var entry: parent ? parent.entry : null
+      width: parent ? parent.width : 0
+      implicitHeight: tileFlow.implicitHeight + Style.space(8)
+
+      Flow {
+        id: tileFlow
+        x: Style.space(6)
+        y: Style.space(4)
+        width: gg.width - Style.space(12)
+        spacing: Style.space(6)
+
+        Repeater {
+          model: gg.entry ? gg.entry.games : []
+          GameTile {
+            required property var modelData
+            game: modelData
+          }
+        }
+      }
+    }
+  }
+
+  // A game as an icon: dimmed until you can play it here or stream it, a
+  // monitor badge when it streams, the download's progress along the
+  // bottom. Click for its options.
+  component GameTile: Item {
+    id: gt
+    property var game: null
+    readonly property var download: game ? root.downloadsById[game.appid] || null : null
+    readonly property bool streams: !!game && (!!game.streamDevice || root.streamable(game))
+    readonly property bool playable: !!game && (game.installed || streams)
+    width: Style.space(44)
+    height: width
+
+    ClippingRectangle {
+      anchors.fill: parent
+      radius: Style.space(6)
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+      opacity: gt.playable || gt.download ? 1 : 0.45
+      border.width: tileHover.hovered ? 1 : 0
+      border.color: root.foreground
+
+      Image {
+        anchors.fill: parent
+        source: gt.game ? root.imageSource(gt.game.icon) : ""
+        sourceSize.width: 88
+        fillMode: Image.PreserveAspectCrop
+        asynchronous: true
+      }
+
+      Rectangle {
+        visible: !!gt.download && gt.download.total > 0
+        anchors.left: parent.left
+        anchors.bottom: parent.bottom
+        height: Style.space(3)
+        width: gt.download ? parent.width * gt.download.progress : 0
+        color: root.onlineColor
+      }
+    }
+
+    Rectangle {
+      visible: gt.streams && !(gt.game && gt.game.installed)
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      anchors.margins: -Style.space(2)
+      width: Style.space(16)
+      height: width
+      radius: width / 2
+      color: Color.background
+      border.width: 1
+      border.color: root.onlineColor
+
+      Text {
+        anchors.centerIn: parent
+        text: "󰍹"
+        color: root.onlineColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption * 0.8
+      }
+    }
+
+    HoverHandler { id: tileHover }
+
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: root.showGameOptions(gt.game)
+    }
+
+    ToolTip.visible: tileHover.hovered
+    ToolTip.delay: 300
+    ToolTip.text: !gt.game ? "" : gt.game.name
+      + (gt.game.installed ? " · installed" : gt.streams ? " · stream" : "")
+      + (gt.game.playtime ? " · " + root.playtimeLabel(gt.game.playtime) : "")
   }
 
   // A section header in the library: Remote Play (which minimises, like a

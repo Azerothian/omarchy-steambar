@@ -18,7 +18,9 @@ A bar widget for [Omarchy](https://omarchy.org)'s shell that puts Steam in a pop
   computers as icons. One line of chips filters the games: **Installed** (on by default, and
   including games installed on your other computers), **Uninstalled**, **Most played** and **Group
   by computer** as icons, then This PC and a chip per computer to show only its games (click again
-  for all). Click a game to play or stream it, or hover to pick another computer or install here.
+  for all). Click a game to play or stream it, or hover to pick another computer or install here. The first
+  chip switches to **panel view**: each section's games as a wrapping grid of icons, and clicking
+  one shows its options (play, stream, install, store page, open in Steam, properties, uninstall).
 - **Groups**: your Steam group chats (named groups, Steam group chats and chats with several
   friends), newest first, with unread counts. Open one to see its members as avatars (online first),
   read and write in it, switch between its rooms, or pop it out into its own window. Needs Steam's debugging port.

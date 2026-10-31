@@ -258,6 +258,23 @@ def art_for(appid):
     return header, icon
 
 
+def portrait_for(appid):
+    """The game's portrait cover (600x900, as Steam's library grid shows it),
+    local from the library cache when it has it, else the store CDN."""
+    base = os.path.join(STEAM, "appcache", "librarycache", str(appid))
+    try:
+        for entry in os.scandir(base):
+            if entry.is_dir():
+                p = os.path.join(entry.path, "library_600x900.jpg")
+                if os.path.exists(p):
+                    return p
+            elif entry.name == "library_600x900.jpg":
+                return entry.path
+    except OSError:
+        pass
+    return "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/%d/library_600x900.jpg" % appid
+
+
 # ---------- games ----------
 def installed_apps():
     out = set()
@@ -310,6 +327,7 @@ def games():
             "installed": aid in installed,
             "header": header,
             "icon": icon,
+            "portrait": portrait_for(aid),
         })
     out.sort(key=lambda g: (-g["lastPlayed"], g["name"].lower()))
     return {"user": user, "games": out}

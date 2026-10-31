@@ -4641,17 +4641,22 @@ Panel {
     }
   }
 
-  // A game as an icon: dimmed until you can play it here or stream it, a
-  // monitor badge when it streams, the download's progress along the
-  // bottom. Click for its options.
+  // A game as its portrait cover (as Steam's library grid shows it):
+  // dimmed until you can play it here or stream it, a monitor badge when
+  // it streams, the download's progress along the bottom. Click for its
+  // options. Covers Steam doesn't have fall back to the header art, then
+  // the icon.
   component GameTile: Item {
     id: gt
     property var game: null
+    property int art: 0
     readonly property var download: game ? root.downloadsById[game.appid] || null : null
     readonly property bool streams: !!game && (!!game.streamDevice || root.streamable(game))
     readonly property bool playable: !!game && (game.installed || streams)
-    width: Style.space(44)
-    height: width
+    readonly property var sources: game ? [game.portrait, game.header, game.icon].filter(function(x) { return !!x }) : []
+    onGameChanged: art = 0
+    width: Style.space(62)
+    height: Math.round(width * 1.5)
 
     ClippingRectangle {
       anchors.fill: parent
@@ -4663,10 +4668,26 @@ Panel {
 
       Image {
         anchors.fill: parent
-        source: gt.game ? root.imageSource(gt.game.icon) : ""
-        sourceSize.width: 88
+        source: gt.art < gt.sources.length ? root.imageSource(gt.sources[gt.art]) : ""
+        sourceSize.width: 200
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
+        onStatusChanged: if (status === Image.Error) gt.art++
+      }
+
+      // No art at all: the name.
+      Text {
+        anchors.fill: parent
+        anchors.margins: Style.space(4)
+        visible: gt.art >= gt.sources.length
+        text: gt.game ? gt.game.name : ""
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        wrapMode: Text.Wrap
+        horizontalAlignment: Text.AlignHCenter
+        verticalAlignment: Text.AlignVCenter
+        elide: Text.ElideRight
       }
 
       Rectangle {

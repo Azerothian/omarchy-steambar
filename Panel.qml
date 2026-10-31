@@ -64,7 +64,6 @@ Panel {
   // the list (the box on a group's header). Saved as space-separated ids.
   readonly property var iconGroups: {
     var v = pref("iconGroups", null)
-    if (v === null) v = pref("quickGroup", "")   // the earlier single-group setting
     if (typeof v === "string") v = v.split(/\s+/)
     return Array.isArray(v) ? v.map(String).filter(function(id) { return id !== "" }) : []
   }
@@ -83,8 +82,6 @@ Panel {
     return f.gameIcon || "https://shared.fastly.steamstatic.com/store_item_assets/steam/apps/" + f.appid + "/capsule_sm_120.jpg"
   }
 
-  // A click opens the chat beside the list; the window button pops it out.
-  function chatWith(friend) { openChat(friend) }
 
   // An avatar clicked (a friend group's icons, a group chat's members):
   // chat with a friend, or open someone else's Steam profile.
@@ -92,7 +89,7 @@ Panel {
     if (!person) return
     if (person.isFriend === false) { launch("steam://url/SteamIDPage/" + person.steamid); return }
     if (inWindow) popOutChat(person)
-    else chatWith(person)
+    else openChat(person)
   }
   // Set by commands that open the popup on a particular tab.
   property bool keepTab: false
@@ -289,6 +286,8 @@ Panel {
   property bool uninstallArmed: false
 
   function showGameOptions(game) { uninstallArmed = false; gameOptions = game }
+  // An option was picked: close the options, then do it to that game.
+  function withOptionsGame(fn) { var g = gameOptions; closeGameOptions(); if (g) fn(g) }
   function closeGameOptions() { gameOptions = null; keyCatcher.forceActiveFocus() }
 
   readonly property var libraryList: {
@@ -502,10 +501,9 @@ Panel {
     readonly property int badge: tabName === "friends" ? (root.unreadTotal || root.friendsOnline)
       : tabName === "groups" ? root.groupUnread : 0
     radius: Style.space(6)
-    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b,
-      dragging ? 0.18 : selected ? 0.12 : rtMouse.containsMouse ? 0.06 : 0)
+    color: Util.alpha(root.foreground, dragging ? 0.18 : selected ? 0.12 : rtMouse.containsMouse ? 0.06 : 0)
     border.width: selected || dragging ? 1 : 0
-    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.3)
+    border.color: Util.alpha(root.foreground, 0.3)
 
     Column {
       anchors.centerIn: parent
@@ -538,7 +536,7 @@ Panel {
       width: Math.max(height, badgeText.implicitWidth + Style.space(8))
       height: badgeText.implicitHeight + Style.space(2)
       radius: height / 2
-      color: root.unreadTotal || rt.tabName === "groups" ? root.inGameColor : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.16)
+      color: root.unreadTotal || rt.tabName === "groups" ? root.inGameColor : Util.alpha(root.foreground, 0.16)
 
       Text {
         id: badgeText
@@ -591,9 +589,9 @@ Panel {
     property bool closable: true
     implicitHeight: noticeCol.implicitHeight + Style.space(20)
     radius: Style.space(6)
-    color: Qt.rgba(root.warnColor.r, root.warnColor.g, root.warnColor.b, 0.1)
+    color: Util.alpha(root.warnColor, 0.1)
     border.width: 1
-    border.color: Qt.rgba(root.warnColor.r, root.warnColor.g, root.warnColor.b, 0.45)
+    border.color: Util.alpha(root.warnColor, 0.45)
 
     ColumnLayout {
       id: noticeCol
@@ -619,12 +617,11 @@ Panel {
           wrapMode: Text.Wrap
         }
 
-        PanelActionButton {
+        ActionButton {
           visible: closable
           iconText: "󰅖"
           tooltipText: "Hide"
           foreground: root.dim
-          fontFamily: root.fontFamily
           fontSize: Style.font.caption
           onClicked: root.degradedOpen = false
         }
@@ -680,7 +677,7 @@ Panel {
           Layout.fillWidth: true
           implicitHeight: cmdText.implicitHeight + Style.space(10)
           radius: Style.space(4)
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+          color: Util.alpha(root.foreground, 0.08)
 
           Text {
             id: cmdText
@@ -695,12 +692,9 @@ Panel {
           }
         }
 
-        PanelActionButton {
+        ActionButton {
           iconText: "󰆏"
           tooltipText: "Copy"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: Style.font.bodySmall
           onClicked: root.copyText(root.enableCommand)
         }
       }
@@ -718,17 +712,11 @@ Panel {
     }
   }
 
-  component SettingsHeader: Text {
+  component SettingsHeader: SectionLabel {
     property bool first: false
     Layout.fillWidth: true
     Layout.topMargin: first ? 0 : Style.space(10)
-    textFormat: Text.PlainText
     font.capitalization: Font.AllUppercase
-    color: Qt.darker(root.foreground, 1.4)
-    font.family: root.fontFamily
-    font.pixelSize: Style.font.caption
-    font.bold: true
-    font.letterSpacing: 1.2
   }
 
   component SettingsNote: Text {
@@ -742,9 +730,6 @@ Panel {
 
   component SettingsToggle: FilterTick {
     implicitHeight: Style.space(24)
-    foreground: root.foreground
-    dim: root.dim
-    fontFamily: root.fontFamily
   }
 
   // A filter as a chip: icon, label, an optional count; selected ones are
@@ -822,7 +807,7 @@ Panel {
         anchors.horizontalCenterOffset: (grip.side === "right" ? 1 : -1) * Style.space(index ? 3 : 0)
         anchors.verticalCenter: parent.verticalCenter
         anchors.verticalCenterOffset: Style.space(index ? 3 : 0)
-        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, grip.containsMouse || grip.pressed ? 0.8 : 0.3)
+        color: Util.alpha(root.foreground, grip.containsMouse || grip.pressed ? 0.8 : 0.3)
       }
     }
 
@@ -855,6 +840,72 @@ Panel {
     onCanceled: root.finishResize()
   }
 
+  // A dialog over the popup: the popup dims behind a centred card, which
+  // takes the keys; clicking outside it dismisses. Content goes in the card.
+  component ModalScrim: Rectangle {
+    id: scrim
+    property bool shown: false
+    property real contentHeight: 0
+    default property alias body: cardBox.data
+    signal dismissed()
+    anchors.fill: parent
+    visible: shown
+    color: Util.alpha(Color.background, 0.75)
+    onVisibleChanged: if (visible) cardBox.forceActiveFocus()
+
+    MouseArea {
+      anchors.fill: parent
+      acceptedButtons: Qt.AllButtons
+      // Holds the hover too, so rows behind don't react.
+      hoverEnabled: true
+      onClicked: scrim.dismissed()
+    }
+
+    Rectangle {
+      id: cardBox
+      anchors.centerIn: parent
+      width: Math.min(parent.width - Style.space(40), Style.space(320))
+      height: Math.min(parent.height - Style.space(40), scrim.contentHeight + Style.space(28))
+      radius: Style.space(8)
+      color: Color.background
+      border.width: 1
+      border.color: Util.alpha(root.foreground, 0.25)
+      clip: true
+      focus: true
+
+      // Clicks on the card stay on it.
+      MouseArea { anchors.fill: parent }
+    }
+  }
+
+  // Small bold label over a section (headers, Settings, bars).
+  component SectionLabel: Text {
+    textFormat: Text.PlainText
+    color: Qt.darker(root.foreground, 1.4)
+    font.family: root.fontFamily
+    font.pixelSize: Style.font.caption
+    font.bold: true
+    font.letterSpacing: 1.2
+  }
+
+  // A presence or unread dot, ringed in the background colour so it stands
+  // off the avatar it sits on.
+  component Dot: Rectangle {
+    property real size: Style.space(9)
+    width: size
+    height: size
+    radius: size / 2
+    border.width: Style.space(2)
+    border.color: Color.background
+  }
+
+  // The kit's action button with this widget's usual font, size and colour.
+  component ActionButton: PanelActionButton {
+    fontFamily: root.fontFamily
+    fontSize: Style.font.bodySmall
+    foreground: root.foreground
+  }
+
   component FilterChip: Rectangle {
     id: chip
     property string icon: ""
@@ -872,9 +923,9 @@ Panel {
     implicitWidth: chipRow.implicitWidth + Style.space(label === "" ? 12 : 16)
     implicitHeight: Style.space(30)
     radius: Style.space(6)
-    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, selected ? 0.16 : chipHover.hovered ? 0.1 : 0.05)
+    color: Util.alpha(root.foreground, selected ? 0.16 : chipHover.hovered ? 0.1 : 0.05)
     border.width: 1
-    border.color: selected ? root.foreground : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, chipHover.hovered ? 0.35 : 0.14)
+    border.color: selected ? root.foreground : Util.alpha(root.foreground, chipHover.hovered ? 0.35 : 0.14)
 
     HoverHandler { id: chipHover }
     ToolTip.visible: tip !== "" && chipHover.hovered
@@ -922,7 +973,7 @@ Panel {
       }
 
       // Faint until the chip is hovered (or only then, with actionOnHover).
-      PanelActionButton {
+      ActionButton {
         anchors.verticalCenter: parent.verticalCenter
         visible: chip.actionIcon !== "" && (!chip.actionOnHover || chipHover.hovered)
         opacity: chipHover.hovered ? 1 : 0.35
@@ -930,7 +981,6 @@ Panel {
         iconText: chip.actionIcon
         tooltipText: chip.actionTip
         foreground: root.onlineColor
-        fontFamily: root.fontFamily
         fontSize: Style.font.caption
         onClicked: chip.actionClicked()
       }
@@ -941,9 +991,9 @@ Panel {
     id: tick
     property string label: ""
     property bool checked: false
-    property color foreground
-    property color dim
-    property string fontFamily
+    property color foreground: root.foreground
+    property color dim: root.dim
+    property string fontFamily: root.fontFamily
     signal toggled()
     implicitWidth: tickRow.implicitWidth
 
@@ -1221,7 +1271,6 @@ Panel {
     Qt.callLater(function() { chatView.focusInput() })
   }
 
-  function chatWithGroup(group) { openGroupChat(group) }
 
   function closeChat() {
     chatFriend = null
@@ -1526,8 +1575,8 @@ Panel {
     if (!item) return
     if (root.tab === "friends" && item.isHeader) toggleGroup(item.sectionId)
     else if (root.tab === "friends" && item.isIconBar) return
-    else if (root.tab === "friends") chatWith(item)
-    else if (root.tab === "groups") chatWithGroup(item)
+    else if (root.tab === "friends") openChat(item)
+    else if (root.tab === "groups") openGroupChat(item)
     else if (root.tab === "store" && !item.owned) openStore(item)
     else if (item.isHeader) { if (item.collapsible) toggleGroup(item.sectionId) }
     else if (item.isDevice) streamDesktop(item.device)
@@ -1716,20 +1765,6 @@ Panel {
     return parts.filter(function(x) { return !!x }).join(" · ")
   }
 
-  function playedLabel(ts) {
-    if (!ts) return "Never played"
-    var now = new Date()
-    var then = new Date(ts * 1000)
-    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
-    var day = new Date(then.getFullYear(), then.getMonth(), then.getDate()).getTime()
-    var days = Math.round((today - day) / 86400000)
-    if (days <= 0) return "Today"
-    if (days === 1) return "Yesterday"
-    if (days < 7) return days + " days ago"
-    if (days < 30) return Math.floor(days / 7) + (days < 14 ? " week ago" : " weeks ago")
-    if (then.getFullYear() === now.getFullYear()) return Qt.formatDate(then, "d MMMM")
-    return Qt.formatDate(then, "d MMM yyyy")
-  }
 
   function playtimeLabel(minutes) {
     if (!minutes) return ""
@@ -2135,11 +2170,9 @@ Panel {
             anchors.margins: Style.space(8)
             spacing: Style.space(8)
 
-            PanelActionButton {
+            ActionButton {
               iconText: windowPlayer.playbackState === MediaPlayer.PlayingState ? "󰏤" : "󰐊"
               tooltipText: windowPlayer.playbackState === MediaPlayer.PlayingState ? "Pause (Space)" : "Play (Space)"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
               fontSize: Style.font.body
               onClicked: windowPlayer.toggle()
             }
@@ -2160,11 +2193,9 @@ Panel {
               onMoved: function(v) { windowPlayer.seek(v) }
             }
 
-            PanelActionButton {
+            ActionButton {
               iconText: windowPlayer.muted || windowPlayer.volume === 0 ? "󰝟" : "󰕾"
               tooltipText: windowPlayer.muted ? "Unmute (M)" : "Mute (M)"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
               fontSize: Style.font.body
               onClicked: windowPlayer.muted = !windowPlayer.muted
             }
@@ -2178,20 +2209,17 @@ Panel {
               onMoved: function(v) { windowPlayer.volume = v; windowPlayer.muted = false }
             }
 
-            PanelActionButton {
+            ActionButton {
               iconText: "󰏌"
               tooltipText: "Open in browser"
               foreground: root.dim
-              fontFamily: root.fontFamily
               fontSize: Style.font.body
               onClicked: Qt.openUrlExternally(videoWindow.modelData)
             }
 
-            PanelActionButton {
+            ActionButton {
               iconText: "󰅖"
               tooltipText: "Close (Esc)"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
               fontSize: Style.font.body
               onClicked: root.closeVideo(videoWindow.modelData)
             }
@@ -2329,11 +2357,9 @@ Panel {
           anchors.margins: Style.space(10)
           spacing: Style.space(8)
 
-          PanelActionButton {
+          ActionButton {
             iconText: "󰍴"
             tooltipText: "Zoom out (-)"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
             fontSize: Style.font.body
             onClicked: viewer.zoomCentre(viewer.zoom / 1.25)
           }
@@ -2347,11 +2373,9 @@ Panel {
             onMoved: function(v) { viewer.zoomCentre(v) }
           }
 
-          PanelActionButton {
+          ActionButton {
             iconText: "󰐕"
             tooltipText: "Zoom in (+)"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
             fontSize: Style.font.body
             onClicked: viewer.zoomCentre(viewer.zoom * 1.25)
           }
@@ -2365,38 +2389,29 @@ Panel {
             font.pixelSize: Style.font.bodySmall
           }
 
-          PanelActionButton {
+          ActionButton {
             iconText: "Fit"
             tooltipText: "Fit to window (0)"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            fontSize: Style.font.bodySmall
             onClicked: viewer.setZoom(viewer.fitZoom)
           }
 
-          PanelActionButton {
+          ActionButton {
             iconText: "1:1"
             tooltipText: "Actual size (1)"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            fontSize: Style.font.bodySmall
             onClicked: viewer.zoomCentre(1)
           }
 
-          PanelActionButton {
+          ActionButton {
             iconText: "󰏌"
             tooltipText: "Open in browser"
             foreground: root.dim
-            fontFamily: root.fontFamily
             fontSize: Style.font.body
             onClicked: Qt.openUrlExternally(viewer.modelData)
           }
 
-          PanelActionButton {
+          ActionButton {
             iconText: "󰅖"
             tooltipText: "Close (Esc)"
-            foreground: root.foreground
-            fontFamily: root.fontFamily
             fontSize: Style.font.body
             onClicked: root.closeImage(viewer.modelData)
           }
@@ -2545,7 +2560,7 @@ Panel {
     width: Style.space(16)
     height: Style.space(2)
     radius: height / 2
-    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
+    color: Util.alpha(root.foreground, 0.25)
 
     Rectangle {
       width: parent.width * barGlide.value
@@ -2599,292 +2614,235 @@ Panel {
     }
 
     // Panel view: a game's options (play, stream, install, store page...).
-    Rectangle {
+    ModalScrim {
       id: optionsOverlay
-      anchors.fill: parent
       z: 49
-      visible: !!root.gameOptions
-      color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 0.75)
-      onVisibleChanged: if (visible) optionsCard.forceActiveFocus()
+      shown: !!root.gameOptions
+      contentHeight: optionsCol.implicitHeight
+      onDismissed: root.closeGameOptions()
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Escape) { root.closeGameOptions(); event.accepted = true }
+      }
 
       readonly property var game: root.gameOptions
       readonly property var download: game ? root.downloadsById[game.appid] || null : null
       readonly property var streamFrom: !game ? [] : game.streamDevice ? [game.streamDevice] : root.streamable(game) ? root.streamDevices(game) : []
 
-      MouseArea {
+      Flickable {
         anchors.fill: parent
-        acceptedButtons: Qt.AllButtons
-        // Holds the hover too, so rows behind don't react.
-        hoverEnabled: true
-        onClicked: root.closeGameOptions()
-      }
-
-      Rectangle {
-        id: optionsCard
-        anchors.centerIn: parent
-        width: Math.min(parent.width - Style.space(40), Style.space(320))
-        height: Math.min(parent.height - Style.space(40), optionsCol.implicitHeight + Style.space(28))
-        radius: Style.space(8)
-        color: Color.background
-        border.width: 1
-        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
+        anchors.margins: Style.space(14)
+        contentHeight: optionsCol.implicitHeight
         clip: true
-        focus: true
+        boundsBehavior: Flickable.StopAtBounds
 
-        Keys.onPressed: function(event) {
-          if (event.key === Qt.Key_Escape) { root.closeGameOptions(); event.accepted = true }
-        }
+        ColumnLayout {
+          id: optionsCol
+          width: parent.width
+          spacing: Style.space(6)
 
-        MouseArea { anchors.fill: parent }
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(10)
 
-        Flickable {
-          anchors.fill: parent
-          anchors.margins: Style.space(14)
-          contentHeight: optionsCol.implicitHeight
-          clip: true
-          boundsBehavior: Flickable.StopAtBounds
+            ClippingRectangle {
+              Layout.preferredWidth: Style.space(36)
+              Layout.preferredHeight: Style.space(36)
+              radius: Style.space(5)
+              color: Util.alpha(root.foreground, 0.08)
 
-          ColumnLayout {
-            id: optionsCol
-            width: parent.width
-            spacing: Style.space(6)
+              Image {
+                anchors.fill: parent
+                source: root.gameOptions ? root.imageSource(root.gameOptions.icon) : ""
+                sourceSize.width: 72
+                fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+              }
+            }
 
-            RowLayout {
+            ColumnLayout {
               Layout.fillWidth: true
-              spacing: Style.space(10)
+              spacing: Style.space(1)
 
-              ClippingRectangle {
-                Layout.preferredWidth: Style.space(36)
-                Layout.preferredHeight: Style.space(36)
-                radius: Style.space(5)
-                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-
-                Image {
-                  anchors.fill: parent
-                  source: root.gameOptions ? root.imageSource(root.gameOptions.icon) : ""
-                  sourceSize.width: 72
-                  fillMode: Image.PreserveAspectCrop
-                  asynchronous: true
-                }
-              }
-
-              ColumnLayout {
+              Text {
                 Layout.fillWidth: true
-                spacing: Style.space(1)
+                textFormat: Text.PlainText
+                text: root.gameOptions ? root.gameOptions.name : ""
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                wrapMode: Text.Wrap
+                maximumLineCount: 2
+                elide: Text.ElideRight
+              }
 
-                Text {
-                  Layout.fillWidth: true
-                  textFormat: Text.PlainText
-                  text: root.gameOptions ? root.gameOptions.name : ""
-                  color: root.foreground
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.bodySmall
-                  font.bold: true
-                  wrapMode: Text.Wrap
-                  maximumLineCount: 2
-                  elide: Text.ElideRight
-                }
-
-                Text {
-                  Layout.fillWidth: true
-                  textFormat: Text.PlainText
-                  text: !root.gameOptions ? "" : [
-                      root.gameOptions.installed ? "Installed" : optionsOverlay.streamFrom.length ? "On " + optionsOverlay.streamFrom[0].name : "Not installed",
-                      root.playtimeLabel(root.gameOptions.playtime) ? root.playtimeLabel(root.gameOptions.playtime) + " played" : ""
-                    ].filter(function(x) { return x !== "" }).join(" · ")
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  elide: Text.ElideRight
-                }
+              Text {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: !root.gameOptions ? "" : [
+                    root.gameOptions.installed ? "Installed" : optionsOverlay.streamFrom.length ? "On " + optionsOverlay.streamFrom[0].name : "Not installed",
+                    root.playtimeLabel(root.gameOptions.playtime) ? root.playtimeLabel(root.gameOptions.playtime) + " played" : ""
+                  ].filter(function(x) { return x !== "" }).join(" · ")
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
               }
             }
+          }
 
-            PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+          PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
 
+          GameAction {
+            visible: !!root.gameOptions && root.gameOptions.installed
+            icon: "󰐊"
+            label: "Play"
+            onClicked: root.withOptionsGame(function(g) { root.launch("steam://rungameid/" + g.appid) })
+          }
+
+          Repeater {
+            model: optionsOverlay.streamFrom
             GameAction {
-              visible: !!root.gameOptions && root.gameOptions.installed
-              icon: "󰐊"
-              label: "Play"
-              onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.launch("steam://rungameid/" + g.appid) }
+              required property var modelData
+              icon: "󰍹"
+              label: "Stream from " + modelData.name
+              onClicked: root.withOptionsGame(function(g) { root.pendingStream = { device: modelData, game: g }; root.confirmStream() })
             }
+          }
 
-            Repeater {
-              model: optionsOverlay.streamFrom
-              GameAction {
-                required property var modelData
-                icon: "󰍹"
-                label: "Stream from " + modelData.name
-                onClicked: {
-                  var g = root.gameOptions
-                  root.closeGameOptions()
-                  root.pendingStream = { device: modelData, game: g }
-                  root.confirmStream()
-                }
-              }
-            }
+          GameAction {
+            visible: !!optionsOverlay.download
+            icon: optionsOverlay.download && optionsOverlay.download.status === "paused" ? "󰐊" : "󰏤"
+            label: optionsOverlay.download && optionsOverlay.download.status === "paused" ? "Resume download" : "Pause download"
+            onClicked: root.toggleDownload(optionsOverlay.download)
+          }
 
+          Repeater {
+            model: root.gameOptions && !root.gameOptions.installed && !optionsOverlay.download ? root.folders : []
             GameAction {
-              visible: !!optionsOverlay.download
-              icon: optionsOverlay.download && optionsOverlay.download.status === "paused" ? "󰐊" : "󰏤"
-              label: optionsOverlay.download && optionsOverlay.download.status === "paused" ? "Resume download" : "Pause download"
-              onClicked: root.toggleDownload(optionsOverlay.download)
-            }
-
-            Repeater {
-              model: root.gameOptions && !root.gameOptions.installed && !optionsOverlay.download ? root.folders : []
-              GameAction {
-                required property var modelData
-                icon: "󰇚"
-                label: "Install to " + root.folderName(modelData) + " · " + root.sizeLabel(modelData.free) + " free"
-                onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.installGame(g, modelData) }
-              }
-            }
-
-            GameAction {
-              visible: !!root.gameOptions && !root.gameOptions.installed && !optionsOverlay.download && root.folders.length === 0
+              required property var modelData
               icon: "󰇚"
-              label: "Install"
-              onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.installGame(g, null) }
+              label: "Install to " + root.folderName(modelData) + " · " + root.sizeLabel(modelData.free) + " free"
+              onClicked: root.withOptionsGame(function(g) { root.installGame(g, modelData) })
             }
+          }
 
-            GameAction {
-              icon: "󰓜"
-              label: "Store page"
-              onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.openStore(g) }
-            }
+          GameAction {
+            visible: !!root.gameOptions && !root.gameOptions.installed && !optionsOverlay.download && root.folders.length === 0
+            icon: "󰇚"
+            label: "Install"
+            onClicked: root.withOptionsGame(function(g) { root.installGame(g, null) })
+          }
 
-            GameAction {
-              icon: "󰓓"
-              label: "Open in Steam"
-              onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.launch("steam://nav/games/details/" + g.appid) }
-            }
+          GameAction {
+            icon: "󰓜"
+            label: "Store page"
+            onClicked: root.withOptionsGame(root.openStore)
+          }
 
-            GameAction {
-              icon: "󰒓"
-              label: "Properties"
-              onClicked: { var g = root.gameOptions; root.closeGameOptions(); root.launch("steam://gameproperties/" + g.appid) }
-            }
+          GameAction {
+            icon: "󰓓"
+            label: "Open in Steam"
+            onClicked: root.withOptionsGame(function(g) { root.launch("steam://nav/games/details/" + g.appid) })
+          }
 
-            GameAction {
-              visible: !!root.gameOptions && root.gameOptions.installed && root.controllable
-              icon: "󰆴"
-              label: root.uninstallArmed ? "Click again to uninstall" : "Uninstall"
-              danger: root.uninstallArmed
-              onClicked: {
-                if (!root.uninstallArmed) { root.uninstallArmed = true; return }
-                var g = root.gameOptions
-                root.closeGameOptions()
-                root.uninstallGame(g)
-              }
-            }
+          GameAction {
+            icon: "󰒓"
+            label: "Properties"
+            onClicked: root.withOptionsGame(function(g) { root.launch("steam://gameproperties/" + g.appid) })
+          }
 
-            GameAction {
-              icon: "󰅖"
-              label: "Cancel"
-              onClicked: root.closeGameOptions()
+          GameAction {
+            visible: !!root.gameOptions && root.gameOptions.installed && root.controllable
+            icon: "󰆴"
+            label: root.uninstallArmed ? "Click again to uninstall" : "Uninstall"
+            danger: root.uninstallArmed
+            onClicked: {
+              if (!root.uninstallArmed) { root.uninstallArmed = true; return }
+              root.withOptionsGame(root.uninstallGame)
             }
+          }
+
+          GameAction {
+            icon: "󰅖"
+            label: "Cancel"
+            onClicked: root.closeGameOptions()
           }
         }
       }
     }
 
     // Asks before Remote Play starts (a computer's desktop or a game).
-    Rectangle {
-      anchors.fill: parent
+    ModalScrim {
       z: 50
-      visible: !!root.pendingStream
-      color: Qt.rgba(Color.background.r, Color.background.g, Color.background.b, 0.75)
-      onVisibleChanged: if (visible) streamDialog.forceActiveFocus()
-
-      // Clicking outside the dialog cancels.
-      MouseArea {
-        anchors.fill: parent
-        acceptedButtons: Qt.AllButtons
-        // Holds the hover too, so rows behind don't react.
-        hoverEnabled: true
-        onClicked: root.cancelStream()
+      shown: !!root.pendingStream
+      contentHeight: dialogCol.implicitHeight
+      onDismissed: root.cancelStream()
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.confirmStream()
+        else if (event.key === Qt.Key_Escape) root.cancelStream()
+        else return
+        event.accepted = true
       }
 
-      Rectangle {
-        id: streamDialog
-        anchors.centerIn: parent
-        width: Math.min(parent.width - Style.space(40), Style.space(320))
-        height: dialogCol.implicitHeight + Style.space(28)
-        radius: Style.space(8)
-        color: Color.background
-        border.width: 1
-        border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.25)
-        focus: true
+      ColumnLayout {
+        id: dialogCol
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: Style.space(14)
+        spacing: Style.space(8)
 
-        Keys.onPressed: function(event) {
-          if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) root.confirmStream()
-          else if (event.key === Qt.Key_Escape) root.cancelStream()
-          else return
-          event.accepted = true
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: !root.pendingStream ? "" : root.pendingStream.game
+            ? "Stream " + root.pendingStream.game.name + "?"
+            : "Remote Play " + root.pendingStream.device.name + "?"
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          wrapMode: Text.Wrap
         }
 
-        MouseArea { anchors.fill: parent }
+        Text {
+          Layout.fillWidth: true
+          textFormat: Text.PlainText
+          text: !root.pendingStream ? "" : root.pendingStream.game
+            ? "Starts it on " + root.pendingStream.device.name + " and streams it here."
+            : "Streams " + root.pendingStream.device.name + "'s desktop here."
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          wrapMode: Text.Wrap
+        }
 
-        ColumnLayout {
-          id: dialogCol
-          anchors.left: parent.left
-          anchors.right: parent.right
-          anchors.top: parent.top
-          anchors.margins: Style.space(14)
+        RowLayout {
+          Layout.fillWidth: true
+          Layout.topMargin: Style.space(4)
           spacing: Style.space(8)
 
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: !root.pendingStream ? "" : root.pendingStream.game
-              ? "Stream " + root.pendingStream.game.name + "?"
-              : "Remote Play " + root.pendingStream.device.name + "?"
-            color: root.foreground
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            font.bold: true
-            wrapMode: Text.Wrap
+          Item { Layout.fillWidth: true }
+
+          Button {
+            text: "Cancel"
+            bordered: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: root.cancelStream()
           }
 
-          Text {
-            Layout.fillWidth: true
-            textFormat: Text.PlainText
-            text: !root.pendingStream ? "" : root.pendingStream.game
-              ? "Starts it on " + root.pendingStream.device.name + " and streams it here."
-              : "Streams " + root.pendingStream.device.name + "'s desktop here."
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.Wrap
-          }
-
-          RowLayout {
-            Layout.fillWidth: true
-            Layout.topMargin: Style.space(4)
-            spacing: Style.space(8)
-
-            Item { Layout.fillWidth: true }
-
-            Button {
-              text: "Cancel"
-              bordered: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.cancelStream()
-            }
-
-            Button {
-              text: "Start"
-              iconText: "󰐊"
-              bordered: true
-              selected: true
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
-              onClicked: root.confirmStream()
-            }
+          Button {
+            text: "Start"
+            iconText: "󰐊"
+            bordered: true
+            selected: true
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            fontSize: Style.font.bodySmall
+            onClicked: root.confirmStream()
           }
         }
       }
@@ -3010,7 +2968,7 @@ Panel {
         x: rail.width + Style.space(8)
         width: 1
         height: parent.height
-        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+        color: Util.alpha(root.foreground, 0.12)
       }
 
       ColumnLayout {
@@ -3068,21 +3026,15 @@ Panel {
               font.bold: true
             }
 
-            Text {
+            SectionLabel {
               width: parent.width
-              textFormat: Text.PlainText
               text: (root.games.length + " GAMES") + (root.friendsLoaded ? " · " + root.friendsOnline + " FRIENDS ONLINE" : "")
                 + (root.friendsCached && root.tab === "friends" ? " · UPDATING" : "")
-              color: Qt.darker(root.foreground, 1.4)
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              font.bold: true
-              font.letterSpacing: 1.2
               elide: Text.ElideRight
             }
           }
 
-          PanelActionButton {
+          ActionButton {
             id: degradedButton
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
@@ -3090,7 +3042,6 @@ Panel {
             iconText: "󰀦"
             tooltipText: "Some features are limited"
             foreground: root.warnColor
-            fontFamily: root.fontFamily
             fontSize: Style.font.body
             onClicked: root.degradedOpen = !root.degradedOpen
           }
@@ -3103,7 +3054,7 @@ Panel {
           Layout.topMargin: -Style.space(4)
           visible: root.railTop
           implicitHeight: 1
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+          color: Util.alpha(root.foreground, 0.12)
         }
 
         Item {
@@ -3118,7 +3069,7 @@ Panel {
           Layout.bottomMargin: Style.space(2)
           visible: root.railTop
           implicitHeight: 1
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+          color: Util.alpha(root.foreground, 0.12)
         }
 
         DebugNotice {
@@ -3209,7 +3160,7 @@ Panel {
               width: 1
               height: Style.space(20)
               anchors.verticalCenter: parent.verticalCenter
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.2)
+              color: Util.alpha(root.foreground, 0.2)
             }
 
             FilterChip {
@@ -3451,11 +3402,10 @@ Panel {
                 Keys.onEscapePressed: keyCatcher.forceActiveFocus()
               }
 
-              PanelActionButton {
+              ActionButton {
                 iconText: settingsView.showKey ? "󰈉" : "󰈈"
                 tooltipText: settingsView.showKey ? "Hide the key" : "Show the key"
                 foreground: root.dim
-                fontFamily: root.fontFamily
                 fontSize: Style.font.body
                 onClicked: settingsView.showKey = !settingsView.showKey
               }
@@ -3576,12 +3526,9 @@ Panel {
                 font.pixelSize: Style.font.bodySmall
               }
 
-              PanelActionButton {
+              ActionButton {
                 iconText: "󰍴"
                 tooltipText: "Fewer"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
                 onClicked: root.savePref("recentCount", Math.max(3, root.recentCount - 1))
               }
 
@@ -3595,12 +3542,9 @@ Panel {
                 font.bold: true
               }
 
-              PanelActionButton {
+              ActionButton {
                 iconText: "󰐕"
                 tooltipText: "More"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                fontSize: Style.font.bodySmall
                 onClicked: root.savePref("recentCount", Math.min(30, root.recentCount + 1))
               }
             }
@@ -3806,7 +3750,7 @@ Panel {
           anchors.top: parent.top
           anchors.bottom: parent.bottom
           width: 1
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, chatDivider.containsMouse || chatDivider.pressed ? 0.45 : 0.12)
+          color: Util.alpha(root.foreground, chatDivider.containsMouse || chatDivider.pressed ? 0.45 : 0.12)
         }
 
         PaneDivider {
@@ -3849,7 +3793,7 @@ Panel {
           anchors.top: parent.top
           anchors.bottom: parent.bottom
           width: 1
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, storeDivider.containsMouse || storeDivider.pressed ? 0.45 : 0.12)
+          color: Util.alpha(root.foreground, storeDivider.containsMouse || storeDivider.pressed ? 0.45 : 0.12)
         }
 
         PaneDivider {
@@ -3880,21 +3824,16 @@ Panel {
               elide: Text.ElideRight
             }
 
-            PanelActionButton {
+            ActionButton {
               iconText: "󰓓"
               tooltipText: "Open store page in Steam"
               foreground: root.dim
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
               onClicked: root.buyInSteam()
             }
 
-            PanelActionButton {
+            ActionButton {
               iconText: "󰅖"
               tooltipText: "Close (Esc)"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-              fontSize: Style.font.bodySmall
               onClicked: root.closeStore()
             }
           }
@@ -4079,7 +4018,7 @@ Panel {
                   width: Style.space(80)
                   height: Style.space(45)
                   radius: Style.space(3)
-                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                  color: Util.alpha(root.foreground, 0.08)
                   border.width: index === root.mediaIndex ? 2 : 0
                   border.color: root.foreground
                   opacity: index === root.mediaIndex || thumbMouse.containsMouse ? 1 : 0.6
@@ -4199,7 +4138,7 @@ Panel {
                     width: tagText.implicitWidth + Style.space(12)
                     height: tagText.implicitHeight + Style.space(6)
                     radius: Style.space(3)
-                    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+                    color: Util.alpha(root.foreground, 0.08)
                     Text {
                       id: tagText
                       anchors.centerIn: parent
@@ -4217,7 +4156,7 @@ Panel {
                 Layout.fillWidth: true
                 implicitHeight: buyRow.implicitHeight + Style.space(20)
                 radius: Style.space(5)
-                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+                color: Util.alpha(root.foreground, 0.06)
                 visible: !!storePane.page
 
                 RowLayout {
@@ -4469,7 +4408,7 @@ Panel {
                   Layout.fillWidth: true
                   implicitHeight: reviewCol.implicitHeight + Style.space(16)
                   radius: Style.space(4)
-                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.05)
+                  color: Util.alpha(root.foreground, 0.05)
 
                   ColumnLayout {
                     id: reviewCol
@@ -4552,7 +4491,7 @@ Panel {
   // playing in the corner, name and status on hover. Click to chat (or see
   // the profile of someone who isn't a friend).
   component AvatarTile: Item {
-    id: quick
+    id: tile
     property var person: null
     property bool popout: false
     readonly property bool offline: !!person && (person.state === "offline" || person.state === "unknown")
@@ -4564,14 +4503,14 @@ Panel {
       width: Style.space(32)
       height: width
       radius: Style.space(4)
-      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
-      opacity: quick.offline ? 0.4 : 1
-      border.width: quickMouse.containsMouse ? 1 : 0
+      color: Util.alpha(root.foreground, 0.08)
+      opacity: tile.offline ? 0.4 : 1
+      border.width: tileMouse.containsMouse ? 1 : 0
       border.color: root.foreground
 
       Image {
         anchors.fill: parent
-        source: quick.person ? quick.person.avatar || "" : ""
+        source: tile.person ? tile.person.avatar || "" : ""
         sourceSize.width: 64
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
@@ -4584,49 +4523,39 @@ Panel {
         anchors.bottom: parent.bottom
         width: Style.space(14)
         height: width
-        source: root.gameIcon(quick.person)
+        source: root.gameIcon(tile.person)
         sourceSize.width: 32
         fillMode: Image.PreserveAspectCrop
         asynchronous: true
       }
     }
 
-    Rectangle {
-      visible: !quick.offline
-      width: Style.space(9)
-      height: width
-      radius: width / 2
+    Dot {
+      visible: !tile.offline
       anchors.right: parent.right
       anchors.bottom: parent.bottom
       anchors.bottomMargin: Style.space(1)
-      color: quick.person ? root.stateColor(quick.person.state) : root.dim
-      border.width: Style.space(2)
-      border.color: Color.background
+      color: tile.person ? root.stateColor(tile.person.state) : root.dim
     }
 
-    Rectangle {
-      visible: !!quick.person && (quick.person.unread || 0) > 0
-      width: Style.space(9)
-      height: width
-      radius: width / 2
+    Dot {
+      visible: !!tile.person && (tile.person.unread || 0) > 0
       anchors.right: parent.right
       anchors.top: parent.top
       color: root.inGameColor
-      border.width: Style.space(2)
-      border.color: Color.background
     }
 
     MouseArea {
-      id: quickMouse
+      id: tileMouse
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
-      onClicked: root.openPerson(quick.person, quick.popout)
+      onClicked: root.openPerson(tile.person, tile.popout)
     }
 
-    ToolTip.visible: quickMouse.containsMouse
+    ToolTip.visible: tileMouse.containsMouse
     ToolTip.delay: 300
-    ToolTip.text: quick.person ? quick.person.name + " · " + root.friendLine(quick.person) : ""
+    ToolTip.text: tile.person ? tile.person.name + " · " + root.friendLine(tile.person) : ""
   }
 
   // A friend group in icon mode: its friends as one row of avatars, with
@@ -4663,7 +4592,7 @@ Panel {
     Layout.fillWidth: true
     implicitHeight: Style.space(30)
     radius: Style.space(5)
-    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, gaMouse.containsMouse ? 0.1 : 0)
+    color: Util.alpha(root.foreground, gaMouse.containsMouse ? 0.1 : 0)
 
     Row {
       anchors.verticalCenter: parent.verticalCenter
@@ -4752,7 +4681,7 @@ Panel {
     ClippingRectangle {
       anchors.fill: parent
       radius: Style.space(6)
-      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+      color: Util.alpha(root.foreground, 0.08)
       opacity: gt.playable || gt.download ? 1 : 0.45
       border.width: tileHover.hovered ? 1 : 0
       border.color: root.foreground
@@ -4844,21 +4773,15 @@ Panel {
         rowIdx: lh.entryIdx
         implicitHeight: Style.space(24)
 
-        Text {
+        SectionLabel {
           anchors.fill: parent
           anchors.leftMargin: Style.space(6)
           anchors.rightMargin: Style.space(8)
           verticalAlignment: Text.AlignVCenter
-          textFormat: Text.PlainText
           text: !lh.entry ? ""
             : (lh.entry.collapsible ? (lh.entry.collapsed ? "󰅂 " : "󰅀 ")
               : lh.entry.sectionId === "local" ? "󰌢  " : lh.entry.sectionId === "none" || lh.entry.sectionId === "games" ? "" : "󰍹  ")
               + lh.entry.name.toUpperCase() + "  " + lh.entry.count
-          color: Qt.darker(root.foreground, 1.4)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          font.letterSpacing: 1.2
           elide: Text.ElideRight
         }
 
@@ -4871,9 +4794,6 @@ Panel {
           height: parent.height
           label: ""
           checked: root.remotePlayIcons
-          foreground: root.foreground
-          dim: root.dim
-          fontFamily: root.fontFamily
           ToolTip.visible: remoteIconsHover.hovered
           ToolTip.delay: 300
           ToolTip.text: checked ? "Show as a list" : "Show as icons"
@@ -4912,7 +4832,7 @@ Panel {
               width: Style.space(32)
               height: width
               radius: Style.space(4)
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, tileMouse.containsMouse ? 0.16 : 0.08)
+              color: Util.alpha(root.foreground, tileMouse.containsMouse ? 0.16 : 0.08)
               border.width: tileMouse.containsMouse ? 1 : 0
               border.color: root.foreground
 
@@ -4925,16 +4845,11 @@ Panel {
               }
             }
 
-            Rectangle {
-              width: Style.space(9)
-              height: width
-              radius: width / 2
+            Dot {
               anchors.right: parent.right
               anchors.bottom: parent.bottom
               anchors.bottomMargin: Style.space(1)
               color: root.onlineColor
-              border.width: Style.space(2)
-              border.color: Color.background
             }
 
             MouseArea {
@@ -4976,7 +4891,7 @@ Panel {
           Rectangle {
             anchors.fill: parent
             radius: Style.space(4)
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+            color: Util.alpha(root.foreground, 0.08)
 
             Text {
               anchors.centerIn: parent
@@ -4987,17 +4902,13 @@ Panel {
             }
           }
 
-          Rectangle {
-            width: Style.space(10)
-            height: width
-            radius: width / 2
+          Dot {
+            size: Style.space(10)
             anchors.right: parent.right
             anchors.bottom: parent.bottom
             anchors.rightMargin: -Style.space(2)
             anchors.bottomMargin: -Style.space(2)
             color: root.onlineColor
-            border.width: Style.space(2)
-            border.color: Color.background
           }
         }
 
@@ -5027,13 +4938,11 @@ Panel {
           }
         }
 
-        PanelActionButton {
+        ActionButton {
           visible: dr.hasCursor
           iconText: "󰐊"
           tooltipText: dr.entry ? "Remote Play " + dr.entry.device.name + "'s desktop" : ""
           foreground: root.onlineColor
-          fontFamily: root.fontFamily
-          fontSize: Style.font.bodySmall
           onClicked: if (dr.entry) root.streamDesktop(dr.entry.device)
         }
       }
@@ -5080,7 +4989,7 @@ Panel {
           ClippingRectangle {
             anchors.fill: parent
             radius: Style.space(3)
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+            color: Util.alpha(root.foreground, 0.08)
             opacity: l.game && root.uninstalling[l.game.appid] ? 0.4 : 1
 
             Image {
@@ -5134,28 +5043,23 @@ Panel {
         // Hovered and not installed: pause/resume if it's downloading,
         // otherwise one install button per Steam library drive (the
         // preferred one bright).
-        PanelActionButton {
+        ActionButton {
           readonly property bool paused: !!l.download && l.download.status === "paused"
           visible: l.showActions && !!l.download
           iconText: paused ? "󰐊" : "󰏤"
           tooltipText: paused ? "Resume download" : "Pause download"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: Style.font.bodySmall
           onClicked: root.toggleDownload(l.download)
         }
 
         // Hovered: stream from each computer that has it (the usual one bright)…
         Repeater {
           model: l.showActions && !l.download ? l.streamFrom : []
-          PanelActionButton {
+          ActionButton {
             required property var modelData
             required property int index
             iconText: "󰍹"
             tooltipText: "Stream from " + modelData.name
             foreground: index === 0 ? root.foreground : root.dim
-            fontFamily: root.fontFamily
-            fontSize: Style.font.bodySmall
             onClicked: root.streamGame(l.game, modelData)
           }
         }
@@ -5163,14 +5067,12 @@ Panel {
         // …or install it here.
         Repeater {
           model: l.showActions && !l.download ? root.folders : []
-          PanelActionButton {
+          ActionButton {
             required property var modelData
             readonly property bool preferred: root.preferredFolder && root.preferredFolder.index === modelData.index
             iconText: root.folderName(modelData) === "Home" ? "󰋜" : "󰋊"
             tooltipText: "Install to " + root.folderName(modelData) + " · " + root.sizeLabel(modelData.free) + " free"
             foreground: preferred ? root.foreground : root.dim
-            fontFamily: root.fontFamily
-            fontSize: Style.font.bodySmall
             onClicked: root.installGame(l.game, modelData)
           }
         }
@@ -5201,7 +5103,7 @@ Panel {
           ClippingRectangle {
             anchors.fill: parent
             radius: Style.space(4)
-            color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+            color: Util.alpha(root.foreground, 0.06)
 
             Image {
               anchors.fill: parent
@@ -5275,7 +5177,7 @@ Panel {
           Layout.preferredWidth: Style.space(32)
           Layout.preferredHeight: Style.space(32)
           radius: Style.space(4)
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+          color: Util.alpha(root.foreground, 0.08)
 
           Image {
             anchors.fill: parent
@@ -5374,7 +5276,7 @@ Panel {
           rowIdx: fc.entryIdx
           implicitHeight: Style.space(24)
 
-          Text {
+          SectionLabel {
             anchors.left: parent.left
             anchors.right: iconsTick.visible ? iconsTick.left : parent.right
             anchors.top: parent.top
@@ -5382,13 +5284,7 @@ Panel {
             anchors.leftMargin: Style.space(6)
             anchors.rightMargin: Style.space(8)
             verticalAlignment: Text.AlignVCenter
-            textFormat: Text.PlainText
             text: !fc.isHeader ? "" : (fc.entry.collapsed ? "󰅂 " : "󰅀 ") + fc.entry.name.toUpperCase() + "  " + fc.entry.count
-            color: Qt.darker(root.foreground, 1.4)
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            font.bold: true
-            font.letterSpacing: 1.2
             elide: Text.ElideRight
           }
 
@@ -5406,9 +5302,6 @@ Panel {
             ToolTip.delay: 300
             ToolTip.text: checked ? "Show as a list" : "Show as icons"
             HoverHandler { id: iconsHover }
-            foreground: root.foreground
-            dim: root.dim
-            fontFamily: root.fontFamily
             onToggled: root.toggleIconGroup(fc.entry.sectionId)
           }
         }
@@ -5437,7 +5330,7 @@ Panel {
             ClippingRectangle {
               anchors.fill: parent
               radius: Style.space(4)
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+              color: Util.alpha(root.foreground, 0.08)
               opacity: f.isOffline ? 0.45 : 1
 
               Image {
@@ -5449,18 +5342,14 @@ Panel {
               }
             }
 
-            Rectangle {
+            Dot {
+              size: Style.space(10)
               visible: !f.isOffline
-              width: Style.space(10)
-              height: width
-              radius: width / 2
               anchors.right: parent.right
               anchors.bottom: parent.bottom
               anchors.rightMargin: -Style.space(2)
               anchors.bottomMargin: -Style.space(2)
               color: f.friend ? root.stateColor(f.friend.state) : root.dim
-              border.width: Style.space(2)
-              border.color: Color.background
             }
           }
 
@@ -5550,23 +5439,19 @@ Panel {
           }
 
           // On hover: open in Steam, or in a chat window of its own.
-          PanelActionButton {
+          ActionButton {
             visible: f.hasCursor && !!f.friend
             iconText: "󰓓"
             tooltipText: "Open in Steam"
             foreground: root.dim
-            fontFamily: root.fontFamily
-            fontSize: Style.font.bodySmall
             onClicked: root.launch("steam://friends/message/" + f.friend.steamid)
           }
 
-          PanelActionButton {
+          ActionButton {
             visible: f.hasCursor && !!f.friend && root.controllable
             iconText: "󰏌"
             tooltipText: "Chat in its own window"
             foreground: root.dim
-            fontFamily: root.fontFamily
-            fontSize: Style.font.bodySmall
             onClicked: root.popOutChat(f.friend)
           }
 
@@ -5612,7 +5497,7 @@ Panel {
         Layout.preferredWidth: Style.space(72)
         Layout.preferredHeight: Style.space(34)
         radius: Style.space(4)
-        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+        color: Util.alpha(root.foreground, 0.06)
         opacity: dl.download && dl.download.status === "paused" ? 0.5 : 1
 
         Image {
@@ -5683,14 +5568,13 @@ Panel {
         }
       }
 
-      PanelActionButton {
+      ActionButton {
+        fontSize: Style.font.icon
         readonly property bool paused: !!dl.download && dl.download.status === "paused"
         visible: !!dl.download && root.controllable
           && ["downloading", "paused", "queued", "preparing"].indexOf(dl.download.status) >= 0
         iconText: paused ? "󰐊" : "󰏤"
         tooltipText: paused ? "Resume download" : "Pause download"
-        foreground: root.foreground
-        fontFamily: root.fontFamily
         onClicked: root.toggleDownload(dl.download)
       }
     }
@@ -5725,7 +5609,7 @@ Panel {
       radius: height / 2
       color: badge.armed || badgeMouse.containsMouse ? root.dangerColor : Color.background
       border.width: 1
-      border.color: badge.armed || badgeMouse.containsMouse ? root.dangerColor : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.35)
+      border.color: badge.armed || badgeMouse.containsMouse ? root.dangerColor : Util.alpha(root.foreground, 0.35)
       anchors.right: parent.right
       scale: badge.shown ? 1 : 0
       transformOrigin: Item.Right
@@ -5799,10 +5683,6 @@ Panel {
     // What steamctl.py calls the chat: an account id, or groupid:roomid.
     readonly property string target: group ? groupId + ":" + currentRoom : accountid
     readonly property var rooms: group ? group.rooms || [] : []
-    readonly property string roomName: {
-      for (var i = 0; i < rooms.length; i++) if (rooms[i].id === currentRoom) return rooms[i].name
-      return ""
-    }
     readonly property string title: group ? group.name : friend ? friend.name : ""
     // A group chat's members (steamctl.py members), online first.
     property var members: []
@@ -5923,7 +5803,7 @@ Panel {
           Layout.preferredWidth: Style.space(32)
           Layout.preferredHeight: Style.space(32)
           radius: Style.space(4)
-          color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+          color: Util.alpha(root.foreground, 0.08)
 
           Image {
             anchors.fill: parent
@@ -5969,32 +5849,25 @@ Panel {
           }
         }
 
-        PanelActionButton {
+        ActionButton {
           iconText: "󰓓"
           tooltipText: "Open in Steam"
           foreground: root.dim
-          fontFamily: root.fontFamily
-          fontSize: Style.font.bodySmall
           onClicked: if (cv.group) root.launch("steam://open/friends")
             else if (cv.friend) root.launch("steam://friends/message/" + cv.friend.steamid)
         }
 
-        PanelActionButton {
+        ActionButton {
           visible: !cv.popout
           iconText: "󰏌"
           tooltipText: "Open in its own window"
           foreground: root.dim
-          fontFamily: root.fontFamily
-          fontSize: Style.font.bodySmall
           onClicked: cv.popOutRequested()
         }
 
-        PanelActionButton {
+        ActionButton {
           iconText: "󰅖"
           tooltipText: cv.popout ? "Close window" : "Close chat (Esc)"
-          foreground: root.foreground
-          fontFamily: root.fontFamily
-          fontSize: Style.font.bodySmall
           onClicked: cv.closeRequested()
         }
       }
@@ -6005,14 +5878,9 @@ Panel {
         visible: !!cv.group && cv.members.length > 0
         spacing: Style.space(2)
 
-        Text {
+        SectionLabel {
           leftPadding: Style.space(2)
           text: "MEMBERS  " + cv.membersOnline + "/" + cv.members.length
-          color: Qt.darker(root.foreground, 1.4)
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          font.bold: true
-          font.letterSpacing: 1.2
         }
 
         IconStrip {
@@ -6125,11 +5993,10 @@ Panel {
           }
         }
 
-        PanelActionButton {
+        ActionButton {
           iconText: "󰒊"
           tooltipText: "Send (Enter)"
           foreground: chatInput.text.trim() !== "" ? root.onlineColor : root.dim
-          fontFamily: root.fontFamily
           fontSize: Style.font.body
           onClicked: { cv.send(); chatInput.forceActiveFocus() }
         }
@@ -6179,7 +6046,7 @@ Panel {
         width: Style.space(16)
         height: width
         radius: Style.space(3)
-        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.08)
+        color: Util.alpha(root.foreground, 0.08)
         anchors.verticalCenter: parent.verticalCenter
 
         Image {
@@ -6213,7 +6080,7 @@ Panel {
         : Math.min(Math.max(msgText.implicitWidth, stamp.implicitWidth) + cb.padX * 2, cb.width * 0.82)
       height: content.implicitHeight + cb.padY * 2 + (cb.stampInline || !root.showMessageTimes ? 0 : stamp.implicitHeight + Style.space(2))
       radius: Style.space(10)
-      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, cb.mine ? 0.18 : 0.07)
+      color: Util.alpha(root.foreground, cb.mine ? 0.18 : 0.07)
       border.width: cb.message && cb.message.failed ? 1 : 0
       border.color: root.dangerColor
       opacity: cb.message && cb.message.pending ? 0.55 : 1
@@ -6312,8 +6179,8 @@ Panel {
           width: pillRow.implicitWidth + Style.space(12)
           height: Style.space(22)
           radius: height / 2
-          color: modelData.mine ? Qt.rgba(root.onlineColor.r, root.onlineColor.g, root.onlineColor.b, 0.22)
-            : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, pillMouse.containsMouse ? 0.14 : 0.07)
+          color: modelData.mine ? Util.alpha(root.onlineColor, 0.22)
+            : Util.alpha(root.foreground, pillMouse.containsMouse ? 0.14 : 0.07)
           border.width: modelData.mine ? 1 : 0
           border.color: root.onlineColor
 
@@ -6454,24 +6321,20 @@ Panel {
 
       Item { width: parent.width - (vc.player ? timeText.implicitWidth + Style.space(10) : 0) - muteBtn.width - windowBtn.width - Style.space(12); height: 1 }
 
-      PanelActionButton {
+      ActionButton {
         id: muteBtn
         visible: !!vc.player
         iconText: vc.player && vc.player.muted ? "󰝟" : "󰕾"
         tooltipText: vc.player && vc.player.muted ? "Unmute" : "Mute"
         foreground: "white"
-        fontFamily: root.fontFamily
-        fontSize: Style.font.bodySmall
         onClicked: if (vc.player) vc.player.muted = !vc.player.muted
       }
 
-      PanelActionButton {
+      ActionButton {
         id: windowBtn
         iconText: "󰏌"
         tooltipText: "Play in its own window"
         foreground: "white"
-        fontFamily: root.fontFamily
-        fontSize: Style.font.bodySmall
         onClicked: {
           var at = vc.player ? vc.player.position : 0
           if (vc.player) vc.player.pause()
@@ -6499,7 +6362,7 @@ Panel {
     readonly property real pad: Style.space(8)
     implicitHeight: card ? thumb.height + ytInfo.implicitHeight + pad * 2 : 0
     radius: Style.space(6)
-    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, ycHover.hovered ? 0.12 : 0.06)
+    color: Util.alpha(root.foreground, ycHover.hovered ? 0.12 : 0.06)
 
     HoverHandler { id: ycHover }
 
@@ -6571,7 +6434,7 @@ Panel {
       onClicked: root.playYoutube(yc.card)
     }
 
-    PanelActionButton {
+    ActionButton {
       anchors.right: parent.right
       anchors.top: parent.top
       anchors.margins: Style.space(4)
@@ -6579,8 +6442,6 @@ Panel {
       iconText: "󰏌"
       tooltipText: "Open in browser"
       foreground: "white"
-      fontFamily: root.fontFamily
-      fontSize: Style.font.bodySmall
       onClicked: if (yc.card) Qt.openUrlExternally(yc.card.url)
     }
   }
@@ -6594,9 +6455,9 @@ Panel {
     readonly property real pad: Style.space(8)
     implicitHeight: card ? tagCol.implicitHeight + pad * 2 : 0
     radius: Style.space(6)
-    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.06)
+    color: Util.alpha(root.foreground, 0.06)
     border.width: 1
-    border.color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.12)
+    border.color: Util.alpha(root.foreground, 0.12)
 
     Timer { id: copiedReset; interval: 1500; onTriggered: tc.copied = false }
 
@@ -6630,12 +6491,10 @@ Panel {
           font.pixelSize: Style.font.caption
         }
 
-        PanelActionButton {
+        ActionButton {
           iconText: tc.copied ? "󰄬" : "󰆏"
           tooltipText: "Copy the tag"
           foreground: tc.copied ? root.onlineColor : root.dim
-          fontFamily: root.fontFamily
-          fontSize: Style.font.bodySmall
           onClicked: {
             if (!tc.card) return
             root.copyText(tc.card.raw)
@@ -6693,7 +6552,7 @@ Panel {
     readonly property real pad: Style.space(8)
     implicitHeight: art.height + (showInfo ? info.implicitHeight + pad * 2 : 0)
     radius: Style.space(6)
-    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, cardMouse.containsMouse ? 0.12 : 0.06)
+    color: Util.alpha(root.foreground, cardMouse.containsMouse ? 0.12 : 0.06)
 
     function open() {
       if (!card) return
@@ -6848,7 +6707,7 @@ Panel {
     implicitHeight: Style.space(3)
     height: implicitHeight
     radius: height / 2
-    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, 0.15)
+    color: Util.alpha(root.foreground, 0.15)
     clip: true
 
     Rectangle {

@@ -484,7 +484,6 @@ Panel {
     return parts.join(" · ")
   }
 
-  // Library filter checkbox: filled box when on, empty and dimmed when off.
   // One tab in the rail: icon, label, the Friends badge. Tabs that can move
   // follow the mouse once dragged a few pixels; a plain click selects.
   component RailTab: Rectangle {
@@ -732,8 +731,6 @@ Panel {
     implicitHeight: Style.space(24)
   }
 
-  // A filter as a chip: icon, label, an optional count; selected ones are
-  // outlined. actionIcon adds a button shown on hover (e.g. Remote Play).
   // The line between the list and the chat or store pane: drag to trade
   // width between them (the popup keeps its size, so it follows the mouse).
   // Past the list's minimum it widens the popup instead, growing the pane,
@@ -906,20 +903,18 @@ Panel {
     foreground: root.foreground
   }
 
+  // A filter as a chip: icon, label, an optional count; selected ones are
+  // outlined.
   component FilterChip: Rectangle {
     id: chip
     property string icon: ""
     property string label: ""
     property string detail: ""
     property bool selected: false
-    property string actionIcon: ""
-    property string actionTip: ""
     // Name shown on hover (for icon-only chips).
     property string tip: ""
     property real labelMax: 0
-    property bool actionOnHover: false
     signal clicked()
-    signal actionClicked()
     implicitWidth: chipRow.implicitWidth + Style.space(label === "" ? 12 : 16)
     implicitHeight: Style.space(30)
     radius: Style.space(6)
@@ -971,22 +966,10 @@ Panel {
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
       }
-
-      // Faint until the chip is hovered (or only then, with actionOnHover).
-      ActionButton {
-        anchors.verticalCenter: parent.verticalCenter
-        visible: chip.actionIcon !== "" && (!chip.actionOnHover || chipHover.hovered)
-        opacity: chipHover.hovered ? 1 : 0.35
-        size: Style.space(20)
-        iconText: chip.actionIcon
-        tooltipText: chip.actionTip
-        foreground: root.onlineColor
-        fontSize: Style.font.caption
-        onClicked: chip.actionClicked()
-      }
     }
   }
 
+  // Library filter checkbox: filled box when on, empty and dimmed when off.
   component FilterTick: Item {
     id: tick
     property string label: ""
@@ -5659,11 +5642,8 @@ Panel {
     }
   }
 
-  // One chat message: yours on the right, theirs on the left, with a time
-  // label over the first of each burst. Unsent messages are dimmed; failed
-  // ones get a red outline.
-  // A conversation with one friend: header, messages, and a box to write
-  // in. Used by the popup's chat pane and by popped-out chat windows; each
+  // A conversation with a friend or a group: header, messages, and a box to
+  // write in. Used by the popup's chat pane and by popped-out windows; each
   // keeps its own messages and polls Steam while active.
   component ChatView: Item {
     id: cv
@@ -6004,6 +5984,9 @@ Panel {
     }
   }
 
+  // One chat message: yours on the right, theirs on the left, a day label
+  // over each new day and the time inside the bubble. Unsent messages are
+  // dimmed; failed ones get a red outline.
   component ChatBubble: Item {
     id: cb
     property var message: null

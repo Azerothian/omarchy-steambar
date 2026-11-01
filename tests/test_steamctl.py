@@ -258,6 +258,12 @@ class Commands(unittest.TestCase):
         self.run_cmd(*args, "remove")
         self.assertEqual(self.run_cmd("chat", "1001")["messages"][0]["reactions"], [])
 
+    def test_emoticons(self):
+        e = self.run_cmd("emoticons")
+        self.assertEqual(e["recent"], ["steamhappy", "steamthumbsup", "steamsad"])
+        self.assertEqual(e["all"], sorted(e["all"]))
+        self.assertIn("steamsalty", e["all"])
+
     def test_downloads(self):
         self.assertEqual(self.run_cmd("overview")["appid"], 105600)
         self.assertEqual(self.run_cmd("pause", "105600"), "paused")

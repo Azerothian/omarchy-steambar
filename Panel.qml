@@ -1723,6 +1723,19 @@ Panel {
   property var ctlQueue: []
 
   // input, if given, goes to the helper's stdin rather than its argv.
+  // The emoticons you can react with (steamctl.py emoticons): recent first,
+  // fetched the first time a picker opens.
+  property var emoticons: null
+  property bool emoticonsBusy: false
+  function loadEmoticons() {
+    if (emoticons || emoticonsBusy) return
+    emoticonsBusy = true
+    runCtl(["emoticons"], function(ok, value) {
+      root.emoticonsBusy = false
+      if (ok && value) root.emoticons = value
+    })
+  }
+
   function runCtl(args, input, onDone) {
     if (typeof input === "function") { onDone = input; input = undefined }
     ctlQueue = ctlQueue.concat([{ args: args, input: input, onDone: onDone }])
@@ -5969,7 +5982,38 @@ Panel {
       })
     }
 
+    // The message whose emoticon picker is open, and where to show it.
+    property var pickerMessage: null
+    property real pickerX: 0
+    property real pickerY: 0
+    property real pickerAnchorHeight: 0
+    function openPicker(message, anchor) {
+      var p = anchor.mapToItem(cv, 0, 0)
+      pickerMessage = message
+      pickerX = p.x + anchor.width / 2
+      pickerY = p.y
+      pickerAnchorHeight = anchor.height
+      pickerSearch.text = ""
+      root.loadEmoticons()
+      pickerSearch.forceActiveFocus()
+    }
+    function closePicker() {
+      if (!pickerMessage) return
+      pickerMessage = null
+      chatInput.forceActiveFocus()
+    }
+    // Picking an emoticon you've already reacted with takes it back.
+    function react(name) {
+      var key = pickerMessage.key
+      var message = messages.find(function(m) { return m.key === key }) || pickerMessage
+      closePicker()
+      var full = ":" + name + ":"
+      var mine = (message.reactions || []).some(function(r) { return r.type === 1 && r.name === full && r.mine })
+      toggleReaction(message, { type: 1, name: full, mine: mine })
+    }
+
     onTargetChanged: {
+      pickerMessage = null
       messages = []
       signature = ""
       loaded = false
@@ -6178,6 +6222,11 @@ Panel {
           popout: cv.popout
           showSender: !!cv.group && !!modelData.showSender
           onReactionClicked: function(reaction) { cv.toggleReaction(modelData, reaction) }
+          picking: !!cv.pickerMessage && cv.pickerMessage.key === modelData.key
+          onReactRequested: function(anchor) {
+            if (picking) cv.closePicker()
+            else cv.openPicker(modelData, anchor)
+          }
         }
 
         Text {
@@ -6222,7 +6271,8 @@ Panel {
               cv.send()
               event.accepted = true
             } else if (event.key === Qt.Key_Escape) {
-              if (text !== "") text = ""
+              if (cv.pickerMessage) cv.closePicker()
+              else if (text !== "") text = ""
               else cv.closeRequested()
               event.accepted = true
             } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
@@ -6238,6 +6288,129 @@ Panel {
           foreground: chatInput.text.trim() !== "" ? root.onlineColor : root.dim
           fontSize: Style.font.body
           onClicked: { cv.send(); chatInput.forceActiveFocus() }
+        }
+      }
+    }
+
+    // Clicking or scrolling anywhere else closes the emoticon picker.
+    MouseArea {
+      anchors.fill: parent
+      visible: !!cv.pickerMessage
+      z: 20
+      acceptedButtons: Qt.AllButtons
+      onClicked: cv.closePicker()
+      onWheel: cv.closePicker()
+    }
+
+    // The emoticons you own, recent first, under the message's react button
+    // (over it when there's no room below). Enter picks the first match.
+    Rectangle {
+      id: picker
+      readonly property real cell: Style.space(32)
+      readonly property real gap: Style.space(4)
+      readonly property var names: {
+        var e = root.emoticons
+        if (!e) return []
+        var q = pickerSearch.text.trim().toLowerCase().replace(/:/g, "")
+        if (q) return e.all.filter(function(n) { return n.toLowerCase().indexOf(q) >= 0 })
+        return e.recent.concat(e.all.filter(function(n) { return e.recent.indexOf(n) < 0 }))
+      }
+      visible: !!cv.pickerMessage
+      z: 21
+      width: Math.min(cv.width, 8 * cell + Style.space(16))
+      height: Math.min(cv.height, Style.space(230))
+      x: Math.max(0, Math.min(cv.pickerX - width / 2, cv.width - width))
+      y: cv.pickerY + cv.pickerAnchorHeight + gap + height <= cv.height ? cv.pickerY + cv.pickerAnchorHeight + gap
+        : Math.max(0, cv.pickerY - gap - height)
+      radius: Style.space(8)
+      color: Color.background
+      border.width: 1
+      border.color: Util.alpha(root.foreground, 0.25)
+
+      // Clicks on the picker stay on it.
+      MouseArea { anchors.fill: parent; onWheel: function(wheel) { wheel.accepted = true } }
+
+      ColumnLayout {
+        anchors.fill: parent
+        anchors.margins: Style.space(8)
+        spacing: Style.space(6)
+
+        TextField {
+          id: pickerSearch
+          Layout.fillWidth: true
+          placeholderText: "Search emoticons"
+          foreground: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+
+          Keys.onPressed: function(event) {
+            if (event.key === Qt.Key_Escape) {
+              cv.closePicker()
+              event.accepted = true
+            } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && picker.names.length) {
+              cv.react(picker.names[0])
+              event.accepted = true
+            }
+          }
+        }
+
+        GridView {
+          Layout.fillWidth: true
+          Layout.fillHeight: true
+          clip: true
+          cellWidth: picker.cell
+          cellHeight: picker.cell
+          boundsBehavior: Flickable.StopAtBounds
+          model: picker.names
+          ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+          delegate: Rectangle {
+            id: emo
+            required property var modelData
+            readonly property bool mine: !!cv.pickerMessage && (cv.pickerMessage.reactions || []).some(function(r) {
+              return r.type === 1 && r.mine && r.name === ":" + emo.modelData + ":"
+            })
+            width: picker.cell
+            height: picker.cell
+            radius: Style.space(6)
+            color: mine ? Util.alpha(root.onlineColor, 0.22) : Util.alpha(root.foreground, emoMouse.containsMouse ? 0.14 : 0)
+
+            Image {
+              anchors.centerIn: parent
+              width: Style.space(22)
+              height: width
+              source: "https://steamcommunity-a.akamaihd.net/economy/emoticon/" + encodeURIComponent(emo.modelData)
+              sourceSize.width: 36
+              fillMode: Image.PreserveAspectFit
+              asynchronous: true
+            }
+
+            MouseArea {
+              id: emoMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: cv.react(emo.modelData)
+            }
+
+            ToolTip.visible: emoMouse.containsMouse
+            ToolTip.delay: 400
+            ToolTip.text: (emo.mine ? "Take back " : "") + ":" + emo.modelData + ":"
+          }
+
+          Text {
+            anchors.centerIn: parent
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            visible: picker.names.length === 0
+            textFormat: Text.PlainText
+            text: !root.emoticons ? (root.emoticonsBusy ? "Loading emoticons…" : "Couldn't load your emoticons")
+              : pickerSearch.text.trim() ? "No emoticons match" : "You don't have any emoticons yet"
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
         }
       }
     }
@@ -6264,7 +6437,10 @@ Panel {
     readonly property bool stampInline: root.showMessageTimes && !cards.length && !!message
       && String(message.html !== undefined ? message.html : message.text).search(/<br>|\n/) < 0
       && msgText.implicitWidth + stampGap + stamp.implicitWidth <= cb.width * 0.82 - padX * 2
+    // This message's emoticon picker is open (keeps its react button showing).
+    property bool picking: false
     signal reactionClicked(var reaction)
+    signal reactRequested(var anchor)
     height: reactionRow.visible ? reactionRow.y + reactionRow.height : bubble.y + bubble.height
 
     Text {
@@ -6458,6 +6634,43 @@ Panel {
           ToolTip.text: (pill.modelData.mine ? "Take back your " : "React with ") + pill.modelData.name
         }
       }
+    }
+
+    HoverHandler { id: bubbleHover }
+
+    // On hover, a button beside the bubble opens the emoticon picker (not on
+    // messages Steam hasn't taken yet).
+    Rectangle {
+      id: reactButton
+      readonly property bool reactable: !!cb.message && !cb.message.pending && !cb.message.failed
+        && cb.message.ordinal !== undefined
+      visible: reactable && (bubbleHover.hovered || cb.picking)
+      width: Style.space(24)
+      height: width
+      radius: width / 2
+      x: cb.mine ? bubble.x - width - Style.space(6) : bubble.x + bubble.width + Style.space(6)
+      y: bubble.y + Math.max(0, (Math.min(bubble.height, Style.space(36)) - height) / 2)
+      color: Util.alpha(root.foreground, reactMouse.containsMouse || cb.picking ? 0.16 : 0.07)
+
+      Text {
+        anchors.centerIn: parent
+        text: "󰇵"
+        color: reactMouse.containsMouse || cb.picking ? root.foreground : root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+
+      MouseArea {
+        id: reactMouse
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
+        onClicked: cb.reactRequested(reactButton)
+      }
+
+      ToolTip.visible: reactMouse.containsMouse && !cb.picking
+      ToolTip.delay: 400
+      ToolTip.text: "React"
     }
   }
 

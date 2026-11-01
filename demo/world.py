@@ -349,6 +349,8 @@ def build(root, offline=False):
         "self": SELF,
         # You're in Deep Rock with a lobby open, so friends can be invited.
         "selfGame": {"state": "in-game", "appid": 548430, "lobby": "90071992547410"},
+        "emoticons": ["steamhappy", "steamthumbsup", "steamsad", "steamsalty", "steammocking", "steamfacepalm",
+                      "steambored", "steamsurprised"],
         "names": {str(a): n for a, n in every},
         "urls": urls,
         "staged": staged,

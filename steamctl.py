@@ -24,6 +24,7 @@ client's own UI uses. This is how Decky Loader talks to Steam too.
                                        <chat> is a friend's account id or groupid:roomid
   steamctl.py react <accountid> <ts> <ordinal> <type> <reaction> add|remove
                                     -> react to a message (or take it back)
+  steamctl.py emoticons             -> the emoticons you can react with, recent first
   steamctl.py send <accountid>      -> send the chat message read from stdin
                                        (never argv, where other users can see it)
   steamctl.py wizard-state          -> install wizard state (8 = showing a EULA)
@@ -756,6 +757,21 @@ REACT_JS = """
 })()
 """
 
+# The emoticons you own (what Steam's own reaction picker offers), the ones
+# you used last first. The list is only fetched once something asks for it.
+EMOTICONS_JS = """
+(async () => {
+  const es = g_FriendsUIApp.ChatStore.EmoticonStore
+  if (!es.is_initialized) {
+    es.RequestEmoticonList()
+    await Promise.race([es.BAwaitInitialized(), new Promise(ok => setTimeout(ok, 5000))])
+  }
+  const recent = (es.recent_emoticons || []).slice(0, 16).map(e => e.name)
+  const all = es.emoticon_list.map(e => e.name).sort((a, b) => a.localeCompare(b))
+  return { recent: recent, all: all }
+})()
+"""
+
 SEND_JS = """
 (() => {
   const chat = %(target)s
@@ -992,6 +1008,8 @@ def main(argv):
         return evaluate(REACT_JS % {"target": chat_target(argv[2]), "ts": int(argv[3]), "ordinal": int(argv[4]),
                                     "type": int(argv[5]), "reaction": json.dumps(reaction),
                                     "add": "true" if argv[7] == "add" else "false"})
+    if cmd == "emoticons":
+        return evaluate(EMOTICONS_JS)
     if cmd == "send":
         return evaluate(SEND_JS % {"target": chat_target(argv[2]), "text": json.dumps(sys.stdin.read())})
     if cmd == "invite":

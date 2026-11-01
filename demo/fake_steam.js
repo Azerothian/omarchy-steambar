@@ -145,6 +145,13 @@ globalThis.g_FriendsUIApp = {
     GetChatRoomGroup: id => { const g = (world.groupChats || []).find(x => x.id === String(id)); return g ? chatGroup(g) : null },
     IncRefActiveChatRoomGroup() {},
     DecRefActiveChatRoomGroup() {},
+    EmoticonStore: {
+      is_initialized: true,
+      emoticon_list: (world.emoticons || []).map(name => ({ name: name })),
+      recent_emoticons: (world.emoticons || []).slice(0, 3).map(name => ({ name: name })),
+      RequestEmoticonList() {},
+      BAwaitInitialized: () => Promise.resolve(true),
+    },
   },
   AppInfoStore: { GetAppInfo: appid => ({ name: appName(appid) }) },
 }

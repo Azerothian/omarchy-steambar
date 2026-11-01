@@ -2211,6 +2211,26 @@ Panel {
           font.pixelSize: Style.font.body
         }
 
+        // Close sits over the video's top-right corner, as in the image viewer.
+        Rectangle {
+          anchors.top: parent.top
+          anchors.right: parent.right
+          anchors.margins: Style.space(10)
+          width: closeVideoButton.implicitWidth + Style.space(8)
+          height: closeVideoButton.implicitHeight + Style.space(8)
+          radius: Style.space(6)
+          color: Util.alpha(Color.background, 0.8)
+
+          ActionButton {
+            id: closeVideoButton
+            anchors.centerIn: parent
+            iconText: "󰅖"
+            tooltipText: "Close (Esc)"
+            fontSize: Style.font.body
+            onClicked: root.closeVideo(videoWindow.modelData)
+          }
+        }
+
         Rectangle {
           id: videoBar
           anchors.left: parent.left
@@ -2272,12 +2292,6 @@ Panel {
               onClicked: Qt.openUrlExternally(videoWindow.modelData)
             }
 
-            ActionButton {
-              iconText: "󰅖"
-              tooltipText: "Close (Esc)"
-              fontSize: Style.font.body
-              onClicked: root.closeVideo(videoWindow.modelData)
-            }
           }
         }
       }
@@ -2404,6 +2418,27 @@ Panel {
           font.pixelSize: Style.font.body
         }
 
+        // Close sits over the image's top-right corner, on a pill so it
+        // reads against any picture.
+        Rectangle {
+          anchors.top: parent.top
+          anchors.right: parent.right
+          anchors.margins: Style.space(10)
+          width: closeImageButton.implicitWidth + Style.space(8)
+          height: closeImageButton.implicitHeight + Style.space(8)
+          radius: Style.space(6)
+          color: Util.alpha(Color.background, 0.8)
+
+          ActionButton {
+            id: closeImageButton
+            anchors.centerIn: parent
+            iconText: "󰅖"
+            tooltipText: "Close (Esc)"
+            fontSize: Style.font.body
+            onClicked: root.closeImage(viewer.modelData)
+          }
+        }
+
         RowLayout {
           id: bar
           anchors.left: parent.left
@@ -2464,12 +2499,6 @@ Panel {
             onClicked: Qt.openUrlExternally(viewer.modelData)
           }
 
-          ActionButton {
-            iconText: "󰅖"
-            tooltipText: "Close (Esc)"
-            fontSize: Style.font.body
-            onClicked: root.closeImage(viewer.modelData)
-          }
         }
       }
     }

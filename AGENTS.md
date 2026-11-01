@@ -7,20 +7,24 @@ friends) and `cache.py`. `demo/` is a stand-in Steam account and client, and `te
 
 ## Testing a change locally
 
-The dev checkout is the installed plugin, so every save is live. The repo itself lives at
-`~/.config/omarchy/plugins/blip.steam`, and `~/dev/omarchy-steambar` is a symlink to it.
+The dev checkout is the installed plugin, so there's nothing to copy. The repo itself lives
+at `~/.config/omarchy/plugins/blip.steam`, and `~/dev/omarchy-steambar` is a symlink to it.
 
-1. Save a file. The shell watches `~/.config/omarchy/plugins` and reloads the plugin by
-   itself; no copy, no restart. Check that it loaded:
+1. Save your changes, then restart the shell:
 
    ```sh
-   journalctl --user --since "-1min" | grep -iE "blip|Panel.qml"
+   omarchy-restart-shell
    ```
 
-   `Local plugin changed, reloading: blip.steam` with no QML errors after it means it loaded.
+   The shell does reload the plugin by itself on save (`Local plugin changed, reloading:
+   blip.steam` in `journalctl --user`), but that reload can keep running the old QML: a
+   moved button still showed in its old place after it. Only a restart reliably loads the
+   new `Panel.qml`. The bar blinks for a moment while it restarts.
 
 2. Open the popup (`omarchy-shell blip.steam toggle`, or `tab friends` and so on) and check
-   the change by eye.
+   the change by eye. `omarchy-shell blip.steam image <https url>` opens the image viewer
+   and `video <https url>` the video one; `grim` can screenshot them for a look without
+   clicking around.
 
 Whatever branch is checked out is what the bar runs, uncommitted edits included.
 
@@ -28,7 +32,7 @@ Whatever branch is checked out is what the bar runs, uncommitted edits included.
 
 The shell finds changes with `inotifywait -r` on `~/.config/omarchy/plugins`, and recursive
 inotify doesn't follow symlinks. With `plugins/blip.steam` as a symlink to a checkout
-elsewhere, the plugin still loads but saves never reload it. With the real files under
+elsewhere, the plugin still loads but saves never even trigger the reload. With the real files under
 `plugins/` and the dev path as the symlink, saves land in the watched folder.
 
 The watcher skips `.git`, so git commands don't reload the plugin. Writes anywhere else in
@@ -54,6 +58,6 @@ demo account, and `python3 -m demo off` switches back (see the README).
 - `python3 -m unittest discover -s tests` runs the Python helpers and the JavaScript that
   `steamctl.py` sends to Steam. Nothing covers `Panel.qml`.
 - `qmllint Panel.qml` prints nothing useful here (it can't resolve the shell's `qs.*`
-  modules), so the reload log in step 3 is the real check that the QML loads.
+  modules). The real check is restarting the shell and looking at the result.
 - QML JavaScript here has no semicolons: a line starting with `[` or `(` joins onto the line
   above it. Start it with a variable instead.

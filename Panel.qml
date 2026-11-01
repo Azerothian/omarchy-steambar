@@ -375,32 +375,37 @@ Panel {
     var byId = {}
     for (var i = 0; i < sections.length; i++) byId[sections[i].id] = sections[i]
     var online = { name: "Online", id: "online", members: [] }, offline = { name: "Offline", id: "offline", members: [] }
+    // Unread chats come first as their own section, out of their usual place
+    // until read.
+    var unread = { name: "Unread", id: "unread", members: [] }
     var q = filterText.trim().toLowerCase()
     for (var j = 0; j < friends.length; j++) {
       var f = friends[j], placed = false
       if (q !== "" && [f.name, f.personaName, f.game].join("\n").toLowerCase().indexOf(q) < 0) continue
+      if (f.unread > 0) { unread.members.push(f); continue }
       var ids = f.groups || []
       for (var k = 0; k < ids.length; k++)
         if (byId[ids[k]]) { byId[ids[k]].members.push(f); placed = true }
       if (!placed) (f.state === "offline" || f.state === "unknown" ? offline : online).members.push(f)
     }
-    var out = []
-    sections.concat([online, offline]).forEach(function(sec) {
+    var out = [], order = [unread].concat(sections, [online, offline])
+    order.forEach(function(sec) {
       if (!sec.members.length) return
       var n = 0
       for (var m = 0; m < sec.members.length; m++)
         if (sec.members[m].state !== "offline" && sec.members[m].state !== "unknown") n++
       // With offline friends hidden, a section with nobody online (the
       // Offline one always) would only be an empty header.
-      if (!showOfflineFriends && n === 0) return
+      // Unread chats show whoever sent them, online or not.
+      if (!showOfflineFriends && n === 0 && sec !== unread) return
       // While searching, every match shows, minimised group or not.
       var collapsed = !!collapsedGroups[sec.id] && q === ""
       out.push({
         isHeader: true, sectionId: sec.id, name: sec.name, collapsible: true, collapsed: collapsed,
-        tick: sec !== online && sec !== offline, ticked: !!sec.icons,
-        count: sec === online ? String(n) : sec === offline ? String(sec.members.length) : n + "/" + sec.members.length,
+        tick: sec !== online && sec !== offline && sec !== unread, ticked: !!sec.icons,
+        count: sec === online ? String(n) : sec === offline || sec === unread ? String(sec.members.length) : n + "/" + sec.members.length,
       })
-      var shown = showOfflineFriends ? sec.members : sec.members.filter(function(f) {
+      var shown = showOfflineFriends || sec === unread ? sec.members : sec.members.filter(function(f) {
         return f.state !== "offline" && f.state !== "unknown"
       })
       if (!collapsed) out = out.concat(sec.icons ? [{ isIconBar: true, sectionId: sec.id, members: shown }] : shown)

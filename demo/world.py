@@ -347,6 +347,8 @@ def build(root, offline=False):
     world = {
         "now": now,
         "self": SELF,
+        # You're in Deep Rock with a lobby open, so friends can be invited.
+        "selfGame": {"state": "in-game", "appid": 548430, "lobby": "90071992547410"},
         "names": {str(a): n for a, n in every},
         "urls": urls,
         "staged": staged,
@@ -358,6 +360,7 @@ def build(root, offline=False):
                         "members": m, "rooms": [{"id": r, "name": rn, "unread": u, "mention": men} for r, rn, u, men in rooms],
                         "activity": now - int(h * HOUR)} for g, n, t, m, rooms, h in GROUP_CHATS],
         "chats": chats(now),
+        "notifications": notifications(now),
         "computers": [{"id": c, "name": n} for c, n in COMPUTERS],
         "remoteApps": {str(a): how["remote"] for a, _, how in LIBRARY if how.get("remote")},
         "folders": [{"index": 0, "path": steam, "label": "", "drive": "nvme0n1", "free": 412 * 1024 ** 3, "isDefault": True},
@@ -378,8 +381,36 @@ def friends_world(now):
             "groups": [groups[g] for g in member_of if g in groups], "favorite": "fav" in member_of,
             "unread": unread, "typing": i == 1001,
             "presence": {548430: "Hazard 4 · Mining Expedition", 1145360: "Escaping Tartarus"}.get(appid, ""),
+            # Games you can join: Nova's lobby, Dax's server.
+            "lobby": {1001: "90071992547409"}.get(i, ""),
+            "connect": {1010: "+connect 203.0.113.7:27015"}.get(i, ""),
         })
     return out
+
+
+def notifications(now):
+    """Steam's notification history (its bell), newest first: one group of
+    notifications each, with the server's raw details. The chat messages in
+    it (the client's toast and the server's) never reach the Events tab."""
+    def server(nid, kind, hours_ago, body, rollup=1):
+        ts = now - int(hours_ago * HOUR)
+        data = {"type": kind, "item": {"notification_id": nid, "notification_type": kind, "body_data": json.dumps(body),
+                                       "timestamp": ts, "hidden": False}}
+        if rollup > 1:
+            data["rollup_count"] = rollup
+        return {"eType": 100 + kind, "notifications": [{"notificationID": nid, "rtCreated": ts, "eSource": 2, "data": data}]}
+
+    toast = {"eType": 8, "notifications": [{"notificationID": 7, "rtCreated": now - 600, "eSource": 1,
+                                            "data": {"array": ["message_1001", "", "Nova", "lobby's open"]}}]}
+    return [
+        toast,
+        server("901", 13, 0.3, {"sender": SELF + 1}),
+        server("902", 8, 1, {"appid": 1145360, "count": 3, "appids": [1145360, 553850, 892970]}),
+        server("903", 3, 5, {"account_id": 1002, "text": "gg last night, that last drop was wild", "title": ""}),
+        server("904", 5, 20, {"requestor_id": str(76561197960265728 + 2001)}),
+        server("905", 4, 30, {"app_id": 548430, "context_id": "2", "asset_id": "1"}, rollup=3),
+        server("906", 28, 50, {"appid": 892970}),
+    ]
 
 
 def chats(now):

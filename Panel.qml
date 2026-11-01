@@ -43,7 +43,7 @@ Panel {
     Quickshell.execDetached(["omarchy-shell", "-q", "shell", "setBarWidget", "blip.steam", name, json, "{}"])
   }
 
-  readonly property var allTabs: ["store", "library", "friends", "groups"]
+  readonly property var allTabs: ["store", "library", "friends", "groups", "events"]
   // Your order from dragging the tabs; the first opens with the popup.
   readonly property var tabOrder: {
     var saved = pref("tabOrder", null), out = []
@@ -295,6 +295,37 @@ Panel {
   function withOptionsGame(fn) { var g = gameOptions; closeGameOptions(); if (g) fn(g) }
   function closeGameOptions() { gameOptions = null; keyCatcher.forceActiveFocus() }
 
+  // The friend whose right-click menu is showing (chat, join, watch,
+  // invite), kept current as the list refreshes.
+  property var friendOptions: null
+  readonly property var friendOptionsLive: friendOptions ? friendById(friendOptions.accountid) || friendOptions : null
+  // The game you're in, when friends can be invited to it ({appid, game}).
+  property var selfGame: null
+
+  function showFriendOptions(friend) { if (friend && friend.isFriend !== false) friendOptions = friend }
+  function withOptionsFriend(fn) { var f = friendOptionsLive; closeFriendOptions(); if (f) fn(f) }
+  function closeFriendOptions() { friendOptions = null; keyCatcher.forceActiveFocus() }
+
+  // What the friend menu and a chat's header offer for a friend's game.
+  // Join is Steam's "Join Game": their lobby or server, when they're in
+  // one. Watch Steam offers for anyone in a game; it asks to watch their
+  // broadcast. Invite is to the game you're in, when it takes invites.
+  function canJoin(f) { return !!f && f.state === "in-game" && !!f.join && !friendsCached }
+  function canWatch(f) { return !!f && f.state === "in-game" && !!f.steamid }
+  readonly property bool canInvite: !!selfGame && controllable
+  readonly property string inviteLabel: selfGame ? "Invite to " + (selfGame.game || "your game") : ""
+  function joinGame(f) { launch(f.join) }
+  function watchGame(f) { launch("steam://broadcast/watch/" + f.steamid) }
+
+  // onError, if given, shows the failure (a chat's own error line);
+  // otherwise it goes on the panel's.
+  function inviteFriend(friend, onError) {
+    if (!onError) { actionError = ""; onError = function(msg) { root.actionError = msg } }
+    runCtl(["invite", String(friend.accountid)], function(ok, value, error) {
+      if (!ok) onError("Couldn't invite " + friend.name + ": " + error)
+    })
+  }
+
   readonly property var libraryList: {
     var q = filterText.trim().toLowerCase()
     function keep(g, here) { return passesFilters(g, here, q) }
@@ -414,7 +445,43 @@ Panel {
   }
 
   readonly property var rows: tab === "library" ? libraryGames
-    : tab === "store" ? storeRows : tab === "friends" ? friendRows : tab === "groups" ? groupRows : []
+    : tab === "store" ? storeRows : tab === "friends" ? friendRows : tab === "groups" ? groupRows
+    : tab === "events" ? eventRows : []
+
+  // ---------- events ----------
+  // The event log (steamctl.py events): Steam's notifications, minus chat
+  // messages, and friends coming online or starting a game, newest first.
+  property var events: []
+  property bool eventsLoaded: false
+  property string eventsError: ""
+
+  function refreshEvents() {
+    if (!eventsProc.running) eventsProc.running = true
+  }
+
+  // The log under a heading per day, searchable by its text.
+  readonly property var eventRows: {
+    var q = filterText.trim().toLowerCase(), out = [], heading = null
+    for (var i = 0; i < events.length; i++) {
+      var e = events[i]
+      if (q !== "" && (e.text + "\n" + (e.detail || "")).toLowerCase().indexOf(q) < 0) continue
+      var day = chatDay(e.ts)
+      if (!heading || heading.name !== day) {
+        heading = { isHeader: true, sectionId: "none", name: day, count: 0 }
+        out.push(heading)
+      }
+      heading.count++
+      out.push(e)
+    }
+    return out
+  }
+
+  // A game's event opens its store page; a friend's opens their chat.
+  function openEvent(e) {
+    if (e.appid) { openStore({ appid: e.appid, name: e.game || "" }); return }
+    var f = e.accountid ? friendById(e.accountid) : null
+    if (f) { keepTab = true; tab = "friends"; openChat(f) }
+  }
 
   // Active/queued/paused downloads from `steam.py downloads`, each with a
   // smoothed `speed` (bytes/s) worked out here from successive samples.
@@ -1086,7 +1153,7 @@ Panel {
     }
   }
 
-  onTabChanged: { if (tab === "groups") refreshGroups(); if (!chatShown && chatView.inputFocused) keyCatcher.forceActiveFocus(); rowIndex = 0; filterText = ""; filterField.text = ""; armedUninstall = 0; list.positionViewAtBeginning(); if (tab === "store") refreshStoreLists() }
+  onTabChanged: { if (tab === "groups") refreshGroups(); if (tab === "events") refreshEvents(); if (!chatShown && chatView.inputFocused) keyCatcher.forceActiveFocus(); rowIndex = 0; filterText = ""; filterField.text = ""; armedUninstall = 0; list.positionViewAtBeginning(); if (tab === "store") refreshStoreLists() }
   onStoreKindChanged: { rowIndex = 0; list.positionViewAtBeginning() }
   onFilterTextChanged: rowIndex = 0
   onMostPlayedChanged: { rowIndex = 0; list.positionViewAtBeginning() }
@@ -1177,6 +1244,7 @@ Panel {
           root.friendGroups = Array.isArray(v) ? [] : v.groups || []
           root.friends = root.sortFriends(Array.isArray(v) ? v : v.friends || [])
         })
+        root.selfGame = Array.isArray(v) ? null : v.self || null
         root.friendsCached = false
         root.friendsLoaded = true
         root.friendsError = ""
@@ -1302,6 +1370,7 @@ Panel {
     library: { icon: "󰓓", label: "Library" },
     friends: { icon: "󰡉", label: "Friends" },
     groups: { icon: "󰭹", label: "Groups" },
+    events: { icon: "󰂚", label: "Events" },
     settings: { icon: "󰒓", label: "Settings" }
   })
   readonly property real chatWidth: dragChat >= 0 ? dragChat : savedSize("chatWidth", Style.space(330), minChat)
@@ -1627,8 +1696,14 @@ Panel {
     root.close()
   }
 
+  // Right-click on a row: a friend's menu (other rows have none).
+  function showRowMenu(item) {
+    if (root.tab === "friends" && item && !item.isHeader && !item.isIconBar) showFriendOptions(item)
+  }
+
   function activateRow(item) {
     if (!item) return
+    if (root.tab === "events") { if (!item.isHeader) openEvent(item); return }
     if (root.tab === "friends" && item.isHeader) toggleGroup(item.sectionId)
     else if (root.tab === "friends" && item.isIconBar) return
     else if (root.tab === "friends") openChat(item)
@@ -1858,7 +1933,7 @@ Panel {
 
   function moveRow(delta) {
     if (!cursorActive) { cursorActive = true; return }
-    if ((tab === "library" || tab === "friends" || tab === "groups") && delta < 0 && rowIndex === 0) { focusFilter(); return }
+    if ((tab === "library" || tab === "friends" || tab === "groups" || tab === "events") && delta < 0 && rowIndex === 0) { focusFilter(); return }
     var n = rows.length
     if (!n) return
     rowIndex = Math.max(0, Math.min(n - 1, rowIndex + delta))
@@ -1867,7 +1942,7 @@ Panel {
   }
 
   function focusFilter() {
-    if (tab !== "library" && tab !== "friends" && tab !== "groups") tab = "library"
+    if (tab !== "library" && tab !== "friends" && tab !== "groups" && tab !== "events") tab = "library"
     filterField.forceActiveFocus()
     cursorActive = false
   }
@@ -2078,7 +2153,7 @@ Panel {
   }
 
   onOpenedChanged: {
-    if (!opened) { armedUninstall = 0; chatFriend = null; chatGroup = null; pendingStream = null; gameOptions = null; closeStore() }
+    if (!opened) { armedUninstall = 0; chatFriend = null; chatGroup = null; pendingStream = null; gameOptions = null; friendOptions = null; closeStore() }
     if (!opened && Date.now() < reopenUntil) { reopenTimer.restart(); return }
     if (opened && reopening) { reopening = false; return }
     if (opened) {
@@ -2088,6 +2163,7 @@ Panel {
       refreshFriends()
       refreshDownloads()
       refreshFolders()
+      if (tab === "events") refreshEvents()
       actionError = ""
       cursorActive = false
       rowIndex = 0
@@ -2558,6 +2634,32 @@ Panel {
     }
   }
 
+  // The event log. Its own process rather than the steamctl queue: the first
+  // run looks up game names, which mustn't hold up chats behind it.
+  Process {
+    id: eventsProc
+    command: ["python3", root.ctlScript, "events"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var r = {}
+        try { r = JSON.parse(String(text || "{}")) } catch (e) { r = { ok: false, error: "no reply" } }
+        root.eventsLoaded = true
+        if (!r.ok) { root.eventsError = r.error || "Couldn't read the events"; return }
+        var v = r.value || {}
+        root.eventsError = v.error || ""
+        if (root.changed("events", v.events || [])) root.keepScroll(function() { root.events = v.events || [] })
+      }
+    }
+  }
+
+  Timer {
+    interval: 30000
+    running: root.opened && root.tab === "events"
+    repeat: true
+    onTriggered: root.refreshEvents()
+  }
+
   // The friend list saved by the last refresh, shown until a live one lands.
   Process {
     id: friendsCacheProc
@@ -2849,6 +2951,109 @@ Panel {
       }
     }
 
+    // A friend's right-click menu: chat, and join, watch or invite them to
+    // a game where Steam would offer it.
+    ModalScrim {
+      id: friendOverlay
+      z: 49
+      shown: !!root.friendOptions
+      contentHeight: friendOptionsCol.implicitHeight
+      onDismissed: root.closeFriendOptions()
+      Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Escape) { root.closeFriendOptions(); event.accepted = true }
+      }
+
+      readonly property var friend: root.friendOptionsLive
+
+      Flickable {
+        anchors.fill: parent
+        anchors.margins: Style.space(14)
+        contentHeight: friendOptionsCol.implicitHeight
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+
+        ColumnLayout {
+          id: friendOptionsCol
+          width: parent.width
+          spacing: Style.space(6)
+
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(10)
+
+            ArtBox {
+              source: friendOverlay.friend ? friendOverlay.friend.avatar || "" : ""
+              sourceWidth: 72
+              Layout.preferredWidth: Style.space(36)
+              Layout.preferredHeight: Style.space(36)
+              radius: Style.space(5)
+            }
+
+            ColumnLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(1)
+
+              Text {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: friendOverlay.friend ? friendOverlay.friend.name : ""
+                color: root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: true
+                elide: Text.ElideRight
+              }
+
+              Text {
+                Layout.fillWidth: true
+                textFormat: Text.PlainText
+                text: friendOverlay.friend ? root.friendLine(friendOverlay.friend) : ""
+                color: friendOverlay.friend ? root.stateColor(friendOverlay.friend.state) : root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+            }
+          }
+
+          PanelSeparator { Layout.fillWidth: true; foreground: root.foreground }
+
+          GameAction {
+            icon: "󰭹"
+            label: "Open chat"
+            onClicked: root.withOptionsFriend(root.openChat)
+          }
+
+          GameAction {
+            visible: root.canJoin(friendOverlay.friend)
+            icon: "󰐊"
+            label: "Join game"
+            onClicked: root.withOptionsFriend(root.joinGame)
+          }
+
+          GameAction {
+            visible: root.canWatch(friendOverlay.friend)
+            icon: "󰕧"
+            label: "Watch game"
+            onClicked: root.withOptionsFriend(root.watchGame)
+          }
+
+          GameAction {
+            visible: root.canInvite
+            icon: "󰁕"
+            label: root.inviteLabel
+            onClicked: root.withOptionsFriend(function(f) { root.inviteFriend(f) })
+          }
+
+          GameAction {
+            icon: "󰅖"
+            label: "Cancel"
+            onClicked: root.closeFriendOptions()
+          }
+        }
+      }
+    }
+
     // Asks before Remote Play starts (a computer's desktop or a game).
     ModalScrim {
       z: 50
@@ -2929,7 +3134,7 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       blocked: filterField.activeFocus || chatView.inputFocused || apiKeyField.activeFocus || driveField.activeFocus || !!root.pendingStream
-        || !!root.gameOptions
+        || !!root.gameOptions || !!root.friendOptions
       onMoveRequested: function(dx, dy) {
         if (dx !== 0 && root.storeOpen) root.stepMedia(dx)
         else if (dx !== 0) root.switchTab(dx)
@@ -3239,6 +3444,7 @@ Panel {
         ColumnLayout {
           Layout.fillWidth: true
           visible: root.tab === "library" || root.tab === "friends" || (root.tab === "groups" && root.groupChats.length > 0)
+            || (root.tab === "events" && root.events.length > 0)
           spacing: Style.space(6)
 
           TextField {
@@ -3246,6 +3452,7 @@ Panel {
             Layout.fillWidth: true
             placeholderText: root.tab === "friends" ? "Search " + root.friends.length + " friends  (/)"
               : root.tab === "groups" ? "Search " + root.groupChats.length + " group chats  (/)"
+              : root.tab === "events" ? "Search " + root.events.length + " events  (/)"
               : "Search " + root.games.length + " games  (/)"
             foreground: root.foreground
             font.family: root.fontFamily
@@ -3280,6 +3487,7 @@ Panel {
           textFormat: Text.PlainText
           text: root.tab === "settings" ? ""
             : root.tab === "friends" ? root.friendsError
+            : root.tab === "events" ? (root.actionError || root.eventsError)
             : root.tab === "store" ? (root.actionError || (root.storeLists[root.storeKind] || {}).error || root.storeLists.error || "")
             : (root.actionError || root.errorText)
           color: root.urgent
@@ -3745,6 +3953,7 @@ Panel {
             sourceComponent: modelData && modelData.isHeader ? sectionHeader
               : root.tab === "friends" ? (modelData && modelData.isIconBar ? friendIconBar : friendRow)
               : root.tab === "groups" ? groupRow
+              : root.tab === "events" ? eventRow
               : root.tab === "store" ? storeRow
               : modelData && modelData.isDevice ? deviceRow : modelData && modelData.isDeviceBar ? deviceBar
               : modelData && modelData.isGameGrid ? gameGrid : libraryRow
@@ -3759,7 +3968,12 @@ Panel {
             wrapMode: Text.WordWrap
             visible: root.rows.length === 0
             textFormat: Text.PlainText
-            text: root.tab === "groups"
+            text: root.tab === "events"
+              ? (!root.eventsLoaded ? "Reading Steam's notifications…"
+                : root.filterText !== "" ? "No events match “" + root.filterText + "”"
+                : root.eventsError !== "" ? "Events need Steam running with its debugging port (see the ⚠ above)."
+                : "No events yet. Friends coming online and starting games are logged from now on.")
+              : root.tab === "groups"
               ? (!root.controllable ? "Group chats need Steam's debugging port (see the ⚠ above)."
                 : root.filterText !== "" ? "No group chats match “" + root.filterText + "”" : "No group chats")
               : root.tab === "friends"
@@ -4520,6 +4734,8 @@ Panel {
     id: tile
     property var person: null
     property bool popout: false
+    // Right-click opens the friend menu (in the Friends list's icons).
+    property bool hasMenu: false
     readonly property bool offline: !!person && (person.state === "offline" || person.state === "unknown")
     width: Style.space(34)
     height: Style.space(38)
@@ -4568,7 +4784,11 @@ Panel {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
-      onClicked: root.openPerson(tile.person, tile.popout)
+      acceptedButtons: tile.hasMenu ? Qt.LeftButton | Qt.RightButton : Qt.LeftButton
+      onClicked: function(mouse) {
+        if (mouse.button === Qt.RightButton) root.showFriendOptions(tile.person)
+        else root.openPerson(tile.person, tile.popout)
+      }
     }
 
     ToolTip.visible: tileMouse.containsMouse
@@ -4595,6 +4815,7 @@ Panel {
           delegate: AvatarTile {
             required property var modelData
             person: modelData
+            hasMenu: true
           }
       }
     }
@@ -5248,6 +5469,97 @@ Panel {
     }
   }
 
+  // One event: the friend's avatar or the game's art (else an icon for the
+  // kind), what happened, any detail (a comment's text), and the time.
+  readonly property var eventIcons: ({
+    online: "󰀄", offline: "󰀅", playing: "󰊗", stopped: "󰊗", gift: "󰹄", comment: "󰆉", item: "󰏗",
+    "friend-invite": "󰜗", sale: "󰜢", preload: "󰇚", wishlist: "󰋑", trade: "󰓦", general: "󰂚",
+    help: "󰋗", "async-game": "󰊗", moderator: "󰒃", family: "󰋜", clip: "󰕧", event: "󰃰",
+    playtest: "󰙨", report: "󰒃"
+  })
+
+  function eventArt(e) {
+    if (!e) return ""
+    if (e.avatar) return e.avatar
+    if (!e.appid) return ""
+    var g = gameById(e.appid)
+    return g && g.icon ? imageSource(g.icon) : e.image || ""
+  }
+
+  Component {
+    id: eventRow
+    RowSurface {
+      id: ev
+      readonly property var event: parent ? parent.entry : null
+      readonly property string art: root.eventArt(event)
+      rowIdx: parent ? parent.rowIdx : 0
+      implicitHeight: Math.max(Style.space(44), evText.implicitHeight + Style.space(12))
+
+      RowLayout {
+        anchors.fill: parent
+        anchors.leftMargin: Style.space(6)
+        anchors.rightMargin: Style.space(8)
+        spacing: Style.space(10)
+
+        ArtBox {
+          source: ev.art
+          sourceWidth: 64
+          Layout.preferredWidth: Style.space(32)
+          Layout.preferredHeight: Style.space(32)
+          Layout.alignment: Qt.AlignVCenter
+          opacity: ev.event && ev.event.kind === "offline" ? 0.45 : 1
+
+          Text {
+            anchors.centerIn: parent
+            visible: ev.art === ""
+            text: ev.event ? root.eventIcons[ev.event.kind] || "󰂚" : ""
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+        }
+
+        ColumnLayout {
+          id: evText
+          Layout.fillWidth: true
+          Layout.alignment: Qt.AlignVCenter
+          spacing: Style.space(1)
+
+          Text {
+            Layout.fillWidth: true
+            textFormat: Text.PlainText
+            text: ev.event ? ev.event.text : ""
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            wrapMode: Text.Wrap
+            maximumLineCount: 2
+            elide: Text.ElideRight
+          }
+
+          Text {
+            Layout.fillWidth: true
+            visible: text !== ""
+            textFormat: Text.PlainText
+            text: ev.event ? ev.event.detail || "" : ""
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
+        }
+
+        Text {
+          Layout.alignment: Qt.AlignVCenter
+          text: ev.event ? root.chatTime(ev.event.ts) : ""
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+      }
+    }
+  }
+
   // Friends: avatar with a presence dot, name, and what they're doing.
   Component {
     id: friendRow
@@ -5749,6 +6061,31 @@ Panel {
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight
           }
+        }
+
+        // A friend's game, as their right-click menu offers it.
+        ActionButton {
+          visible: root.canJoin(cv.friend)
+          iconText: "󰐊"
+          tooltipText: "Join game"
+          foreground: root.dim
+          onClicked: root.joinGame(cv.friend)
+        }
+
+        ActionButton {
+          visible: root.canWatch(cv.friend)
+          iconText: "󰕧"
+          tooltipText: "Watch game"
+          foreground: root.dim
+          onClicked: root.watchGame(cv.friend)
+        }
+
+        ActionButton {
+          visible: !!cv.friend && root.canInvite
+          iconText: "󰁕"
+          tooltipText: root.inviteLabel
+          foreground: root.dim
+          onClicked: { cv.error = ""; root.inviteFriend(cv.friend, function(msg) { cv.error = msg }) }
         }
 
         ActionButton {
@@ -6646,8 +6983,12 @@ Panel {
       anchors.fill: parent
       hoverEnabled: true
       cursorShape: Qt.PointingHandCursor
+      acceptedButtons: Qt.LeftButton | Qt.RightButton
       onEntered: { root.cursorActive = true; root.rowIndex = surface.rowIdx }
-      onClicked: root.activateRow(root.rows[surface.rowIdx])
+      onClicked: function(mouse) {
+        if (mouse.button === Qt.RightButton) root.showRowMenu(root.rows[surface.rowIdx])
+        else root.activateRow(root.rows[surface.rowIdx])
+      }
     }
   }
 }

@@ -330,9 +330,10 @@ PERSONA_JS = r"""(() => {
 })()"""
 
 FRIENDS_JS = """
-(() => {
+(async () => {
   const app = g_FriendsUIApp
   const persona = %(persona)s
+  const invite = %(invite)s
   // The user's own friend groups (Steam's categories) and favorites, as the
   // client's friend list shows them.
   const store = app.FriendStore.FriendGroupStore
@@ -347,21 +348,114 @@ FRIENDS_JS = """
   const memberOf = {}
   for (const g of groups) for (const a of g.members) (memberOf[a] = memberOf[a] || []).push(g.id)
   for (const a of favorites) (memberOf[a] = memberOf[a] || []).unshift("favorites")
+  // The steam:// URL that joins a friend's game, built the way Steam's own
+  // "Join Game" builds it, or "" when their game can't be joined.
+  const joinUrl = (f, steamid) => {
+    const p = f.m_persona || {}
+    const appid = p.m_unGamePlayedAppID || 0
+    if (!appid || !steamid || !p.is_in_joinable_game) return ""
+    const lobby = p.m_game_lobby_id && p.m_game_lobby_id !== "0" ? p.m_game_lobby_id : ""
+    if (lobby) return "steam://joinlobby/" + appid + "/" + lobby + "/" + steamid
+    const connect = p.connect_string
+    return "steam://rungame/" + appid + "/" + steamid + (connect ? "/" + encodeURIComponent(connect) : "")
+  }
   const friends = Array.from(app.FriendStore.all_friends || []).map(f => {
     let presence = ""
     try { presence = f.current_game_rich_presence || "" } catch (e) {}
     const chat = app.ChatStore.GetFriendChat(f.accountid, false)
-    return Object.assign(persona.of(f), {
+    const p = persona.of(f)
+    return Object.assign(p, {
       presence: presence,
       groups: memberOf[f.accountid] || [],
       unread: chat ? chat.unread_message_count || 0 : 0,
+      join: joinUrl(f, p.steamid),
     })
   })
+  // The game you're in, if a friend can be invited to it.
+  let self = null
+  try {
+    const mine = await invite()
+    if (mine) self = { appid: mine.appid, game: persona.of(app.FriendStore.self).game }
+  } catch (e) {}
   return {
     friends: friends,
+    self: self,
     groups: (favorites.length ? [{ id: "favorites", name: "Favorites" }] : [])
       .concat(groups.map(g => ({ id: g.id, name: g.name }))),
   }
+})()
+"""
+
+# How a friend could be invited to the game you're in, the way Steam's friend
+# menu decides it: your lobby, else the game's private connect string, else
+# its public one. Resolves to {appid, lobby} or {appid, connect}, or null.
+INVITE_OPTIONS_JS = r"""(async () => {
+  const self = g_FriendsUIApp.FriendStore.self.m_persona || {}
+  const appid = self.m_unGamePlayedAppID || 0
+  if (!appid) return null
+  if (self.m_game_lobby_id && self.m_game_lobby_id !== "0") return { appid: appid, lobby: self.m_game_lobby_id }
+  let connect = ""
+  try { connect = await SteamClient.WebChat.GetPrivateConnectString(appid) || "" } catch (e) {}
+  connect = connect || self.connect_string || ""
+  return connect ? { appid: appid, connect: connect } : null
+})"""
+
+INVITE_JS = """
+(async () => {
+  const store = g_FriendsUIApp.FriendStore
+  const friend = Array.from(store.all_friends || []).find(f => f.accountid === %(account)s)
+  if (!friend) throw new Error("They aren't on your friends list")
+  const how = await %(invite)s()
+  if (!how) throw new Error("Your game doesn't take invites")
+  if (how.lobby) store.InviteToLobby(friend, how.appid, how.lobby)
+  else store.InviteToGame(friend, how.appid, how.connect)
+  return "invited"
+})()
+"""
+
+# Steam's notification history (the bell in its main window), as it holds it:
+# the server's notifications (sales, comments, items, invites...) with their
+# raw details and whoever they're from. Chat messages are left out, both the
+# server's and the client's own toasts.
+EVENTS_JS = r"""
+(() => {
+  const store = window.NotificationStore
+  if (!store) throw new Error("Steam's notifications aren't available")
+  const friends = g_FriendsUIApp.FriendStore
+  const BASE = 76561197960265728n
+  // An account id or a 64-bit Steam id, as a name and avatar where Steam knows them.
+  const person = id => {
+    try {
+      if (!id || !/^\d+$/.test(String(id)) || String(id) === "0") return null
+      const big = BigInt(id)
+      const accountid = Number(big >= BASE ? big - BASE : big)
+      const p = friends.GetPlayer(accountid) || {}
+      const m = p.m_persona || {}
+      const hash = m.m_strAvatarHash || ""
+      return {
+        accountid: String(accountid), steamid: String(BASE + BigInt(accountid)),
+        name: p.display_name || m.m_strPlayerName || "",
+        avatar: hash && !/^0+$/.test(hash) ? "https://avatars.fastly.steamstatic.com/" + hash + "_medium.jpg" : "",
+      }
+    } catch (e) { return null }
+  }
+  const out = []
+  for (const group of store.m_rgNotificationTray || []) {
+    for (const n of group.notifications || []) {
+      const d = n.data || {}
+      const item = d.item
+      // eSource 2 is the server's; 13 is a chat message.
+      if (n.eSource !== 2 || !item || item.hidden || item.notification_type === 13) continue
+      let body = {}
+      try { body = JSON.parse(item.body_data || "{}") || {} } catch (e) {}
+      const from = body.gifter_account || body.requestor_id || body.sender || body.responder_steamid || body.account_id
+      out.push({
+        id: String(n.notificationID), type: item.notification_type || 0, ts: item.timestamp || n.rtCreated || 0,
+        count: d.rollup_count || 1, body: body, person: person(from),
+      })
+    }
+  }
+  return out
 })()
 """
 
@@ -727,6 +821,127 @@ def youtube_info(video_id):
     return cached_lookup("embeds", "youtube:" + video_id, fetch)
 
 
+# Steam's notification types (ESteamNotificationType) as the Events tab names
+# them. Chat messages (13) never reach the log.
+NOTIFICATION_KINDS = {
+    2: "gift", 3: "comment", 4: "item", 5: "friend-invite", 6: "sale", 7: "preload", 8: "wishlist",
+    9: "trade", 10: "general", 11: "help", 12: "async-game", 14: "moderator", 15: "family", 16: "family",
+    17: "family", 18: "family", 19: "family", 20: "family", 21: "family", 22: "family", 24: "clip",
+    27: "event", 28: "playtest", 29: "trade", 30: "report",
+}
+FAMILY = {
+    15: "A family member asked to use a feature", 16: "You're invited to a Steam family",
+    17: "A family member asked you to buy something", 18: "A family member asked for more playtime",
+    19: "Your purchase request was answered", 20: "Your feature request was answered",
+    21: "Your playtime request was answered", 22: "A game you asked for is in the family library",
+}
+
+
+def app_name(appid):
+    """A game's name from the store (looked up once), or ""."""
+    try:
+        appid = int(appid or 0)
+    except (TypeError, ValueError):
+        return ""
+    return store_app(appid).get("name", "") if appid > 0 else ""
+
+
+def describe_notification(n):
+    """A logged Steam notification as the Events tab shows it: kind, text,
+    detail, and the game or person it's about."""
+    t, body, count = n.get("type"), n.get("body") or {}, max(1, int(n.get("count") or 1))
+    who = n.get("person") or {}
+    name = who.get("name") or "Someone"
+    appid = 0
+    for k in ("appid", "app_id"):
+        try:
+            appid = appid or int(body.get(k) or 0)
+        except (TypeError, ValueError):
+            pass
+    game = app_name(appid) or "a game"
+    detail = ""
+    if t == 2:
+        text = "%s sent you a gift" % name if count == 1 else "%d new gifts" % count
+    elif t == 3:
+        text = "%s commented" % name if who else "New comment"
+        if body.get("title"):
+            text += " on " + str(body["title"])
+        detail = str(body.get("text") or "")
+        if count > 1:
+            text = "%d new comments" % count
+    elif t == 4:
+        text = "New item in your inventory" if count == 1 else "%d new items in your inventory" % count
+        detail = game if appid and appid != 753 else ""
+    elif t == 5:
+        text = "%s sent you a friend invite" % name
+    elif t == 6:
+        text = "A Steam sale has started"
+    elif t == 7:
+        text = "%s can be preloaded" % game
+    elif t == 8:
+        more = int(body.get("count") or 1) - 1
+        text = "%s from your wishlist is on sale" % game if more < 1 else \
+            "%s and %d more from your wishlist are on sale" % (game, more)
+    elif t == 9:
+        text = "%s sent you a trade offer" % name if count == 1 else "%d new trade offers" % count
+    elif t == 11:
+        text = "Steam Support replied to your help request"
+    elif t == 12:
+        text = "%s has an update in your game" % game
+    elif t == 14:
+        text = "A message from a Steam moderator"
+    elif t in FAMILY:
+        text = FAMILY[t]
+    elif t == 24:
+        text = "Clip of %s downloaded" % (body.get("content_app_name") or game)
+    elif t == 27:
+        text = "%s posted an event" % game
+    elif t == 28:
+        # Playtests are their own apps, often named "<game> Playtest".
+        text = "You're invited to the %s playtest" % re.sub(r"\s+playtest$", "", game, flags=re.I)
+    elif t == 29:
+        text = "A trade was reversed"
+    elif t == 30:
+        text = "Steam acted on something you reported"
+    else:
+        text = "Steam announcement" if t == 10 else "Steam notification"
+    return {"id": str(n.get("id")), "ts": int(n.get("ts") or 0), "kind": NOTIFICATION_KINDS.get(t, "steam"),
+            "text": text[:300], "detail": detail[:500], "appid": appid if appid != 753 else 0,
+            "game": game if appid and appid != 753 and game != "a game" else "",
+            "image": store_app(appid).get("header", "") if appid and appid != 753 else "",
+            "accountid": who.get("accountid", ""), "steamid": who.get("steamid", ""), "avatar": who.get("avatar", "")}
+
+
+def describe_presence(e):
+    """A logged friend change (cache.log_presence) as the Events tab shows it."""
+    name, game = e.get("name") or "A friend", e.get("game") or app_name(e.get("appid")) or "a game"
+    text = {"online": "%s came online" % name, "offline": "%s went offline" % name,
+            "playing": "%s started playing %s" % (name, game), "stopped": "%s stopped playing %s" % (name, game)}
+    return dict(e, text=text.get(e.get("kind"), name), detail="")
+
+
+def events():
+    """The event log, newest first: Steam's notifications (saved as they're
+    seen, so they outlast Steam's own short list) and friends' comings and
+    goings. When Steam can't be reached, the log so far and why."""
+    error = ""
+    try:
+        seen = evaluate(EVENTS_JS)
+        cache.add_events([dict(n, id="n:" + str(n.get("id")), source="steam")
+                          for n in seen if isinstance(n, dict)] if isinstance(seen, list) else [])
+    except (OSError, urllib.error.URLError):
+        error = "Can't reach Steam. Is it running?"
+    except RuntimeError as e:
+        error = str(e)[:300]
+    out = []
+    for e in cache.load_events():
+        try:
+            out.append(describe_notification(e) if e.get("source") == "steam" else describe_presence(e))
+        except (TypeError, ValueError, AttributeError):
+            pass
+    return {"events": out, "error": error}
+
+
 def digits(value, what):
     """An id from argv (only digits, so it's safe inside a JS string)."""
     if not re.fullmatch(r"\d{1,20}", value):
@@ -754,9 +969,10 @@ def main(argv):
         # What Steam's own "Uninstall" confirmation calls once you confirm.
         return evaluate('SteamClient.Installs.OpenUninstallWizard([%d], true); "uninstalling"' % int(argv[2]))
     if cmd == "friends":
-        value = evaluate(FRIENDS_JS % {"persona": PERSONA_JS})
+        value = evaluate(FRIENDS_JS % {"persona": PERSONA_JS, "invite": INVITE_OPTIONS_JS})
         if isinstance(value, dict):
             cache.save_friends(value.get("friends") or [], value.get("groups") or [])
+            cache.log_presence(value.get("friends") or [])
         return value
     if cmd == "chat":
         read = "true" if len(argv) > 3 and argv[3] == "read" else "false"
@@ -778,6 +994,11 @@ def main(argv):
                                     "add": "true" if argv[7] == "add" else "false"})
     if cmd == "send":
         return evaluate(SEND_JS % {"target": chat_target(argv[2]), "text": json.dumps(sys.stdin.read())})
+    if cmd == "invite":
+        # invite <account>: to the game you're in, as Steam's friend menu does.
+        return evaluate(INVITE_JS % {"account": int(digits(argv[2], "friend")), "invite": INVITE_OPTIONS_JS})
+    if cmd == "events":
+        return events()
     if cmd == "groups":
         return evaluate(GROUPS_JS)
     if cmd == "members":

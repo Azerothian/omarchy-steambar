@@ -40,13 +40,16 @@ function player(p) {
       m_unGamePlayedAppID: inGame ? p.appid : 0,
       m_gameid: inGame ? String(p.appid) : "0",
       m_strGameExtraInfo: "",
+      m_game_lobby_id: inGame && p.lobby || "0",
+      connect_string: inGame && p.connect || undefined,
+      is_in_joinable_game: !!(inGame && (p.lobby || p.connect)),
     },
   }
 }
 const people = {}
 for (const f of world.friends) people[f.accountid] = player(Object.assign({ friend: true }, f))
 for (const s of world.strangers || []) people[s.accountid] = player(s)
-people[world.self] = player({ accountid: world.self, name: "Blip", state: "online" })
+people[world.self] = player(Object.assign({ accountid: world.self, name: "Blip", state: "online" }, world.selfGame || {}))
 
 // ---------- chats ----------
 function chat(key, onRead) {
@@ -133,6 +136,8 @@ globalThis.g_FriendsUIApp = {
       })),
     },
     FavoritesStore: { favorites: favorites },
+    InviteToLobby(f, appid, lobby) { (world.invites = world.invites || []).push({ to: f.accountid, appid: appid, lobby: lobby }); save() },
+    InviteToGame(f, appid, connect) { (world.invites = world.invites || []).push({ to: f.accountid, appid: appid, connect: connect }); save() },
   },
   ChatStore: {
     GetFriendChat: (id, create) => friendChat(id),
@@ -143,6 +148,9 @@ globalThis.g_FriendsUIApp = {
   },
   AppInfoStore: { GetAppInfo: appid => ({ name: appName(appid) }) },
 }
+
+// ---------- notifications ----------
+globalThis.NotificationStore = { m_rgNotificationTray: world.notifications || [] }
 
 // ---------- Remote Play ----------
 globalThis.window = globalThis
@@ -188,6 +196,7 @@ globalThis.SteamClient = {
   Apps: { StreamGame() {} },
   RemotePlay: { StartDesktopStream() {} },
   Window: { HideWindow() {}, ShowWindow() {}, BringToFront() {} },
+  WebChat: { GetPrivateConnectString: () => done("") },
 }
 globalThis.g_PopupManager = {
   AddPopupCreatedCallback() {}, GetExistingPopup: () => null, GetPopups: () => [],

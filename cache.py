@@ -2,6 +2,8 @@
 
 The friend list is kept as the last snapshot either source produced, so the
 popup can show it straight away and swap in live data when it arrives. The
+Events tab's log lives here too: Steam's notifications as they were seen, and
+friends coming online or starting a game, noticed between live refreshes. The
 community fallback's per-profile statuses live here too, as do details looked
 up for shared links (a store game's name and art, a YouTube title).
 
@@ -25,7 +27,13 @@ CREATE TABLE IF NOT EXISTS profile_status (accountid TEXT PRIMARY KEY, data TEXT
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 CREATE TABLE IF NOT EXISTS apps (appid INTEGER PRIMARY KEY, data TEXT, saved INTEGER);
 CREATE TABLE IF NOT EXISTS embeds (key TEXT PRIMARY KEY, data TEXT, saved INTEGER);
+CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, ts INTEGER, data TEXT);
 """
+
+# The most events kept; older ones are dropped as new ones arrive.
+MAX_EVENTS = 1000
+# Presence seen longer ago than this is too old to tell what changed since.
+PRESENCE_GAP = 600
 
 _db = None
 
@@ -81,6 +89,74 @@ def load_friends():
         return {"friends": [], "groups": [], "collapsed": []}
 
 
+def add_events(events):
+    """Log events ({"id", "ts", ...}); one with a logged id replaces it (a
+    Steam notification rolling up more items)."""
+    rows = [(str(e["id"]), int(e.get("ts") or 0), json.dumps(e, ensure_ascii=False))
+            for e in events if isinstance(e, dict) and e.get("id")]
+    if not rows:
+        return
+    try:
+        with connect() as db:
+            db.executemany("INSERT OR REPLACE INTO events VALUES (?, ?, ?)", rows)
+            db.execute("DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY ts DESC LIMIT ?)", (MAX_EVENTS,))
+    except (sqlite3.Error, OSError):
+        pass
+
+
+def load_events(limit=300):
+    """The newest logged events first."""
+    try:
+        return [json.loads(d) for (d,) in connect().execute("SELECT data FROM events ORDER BY ts DESC, id LIMIT ?", (limit,))]
+    except (sqlite3.Error, OSError, ValueError):
+        return []
+
+
+def log_presence(friends, now=None):
+    """Log what changed since the last live friend list: who came online or
+    went offline, and who started or stopped a game. Nothing is logged across
+    a long gap (Steam or the widget wasn't running), only the new baseline."""
+    now = int(now or time.time())
+    seen = {}
+    for f in friends:
+        if not isinstance(f, dict) or f.get("state") in (None, "unknown"):
+            continue
+        seen[str(f.get("accountid"))] = {
+            "online": f["state"] != "offline", "appid": f.get("appid") or 0, "game": f.get("game") or "",
+            "name": f.get("name") or "", "avatar": f.get("avatar") or "", "steamid": f.get("steamid") or "",
+        }
+    try:
+        db = connect()
+        last = json.loads(_meta(db, "presence") or "{}")
+    except (sqlite3.Error, OSError, ValueError):
+        return
+    events = []
+    before = last.get("friends") or {} if now - (last.get("at") or 0) <= PRESENCE_GAP else {}
+    for accountid, cur in seen.items():
+        old = before.get(accountid)
+        if not old:
+            continue
+
+        def event(kind, appid=0, game=""):
+            events.append({"id": "%s:%s:%d" % (kind, accountid, now), "ts": now, "kind": kind, "accountid": accountid,
+                           "steamid": cur["steamid"], "name": cur["name"], "avatar": cur["avatar"], "appid": appid, "game": game})
+
+        if cur["online"] and not old["online"]:
+            event("online")
+        elif old["online"] and not cur["online"]:
+            event("offline")
+        if cur["appid"] and cur["appid"] != old["appid"]:
+            event("playing", cur["appid"], cur["game"])
+        elif old["appid"] and not cur["appid"] and cur["online"]:
+            event("stopped", old["appid"], old["game"])
+    add_events(events)
+    try:
+        with connect() as db:
+            db.execute("INSERT OR REPLACE INTO meta VALUES ('presence', ?)", (json.dumps({"at": now, "friends": seen}),))
+    except (sqlite3.Error, OSError):
+        pass
+
+
 def save_collapsed(ids):
     """Friend list sections minimised to their header."""
     try:
@@ -133,7 +209,8 @@ def save_lookup(table, key, info):
 
 def clear():
     """Forget everything cached (the friend list, statuses, looked-up links),
-    keeping only which friend groups are minimised."""
+    keeping only which friend groups are minimised and the event log (history,
+    not a copy of anything Steam still has)."""
     try:
         with connect() as db:
             for table in ("friends", "friend_groups", "profile_status", "apps", "embeds"):

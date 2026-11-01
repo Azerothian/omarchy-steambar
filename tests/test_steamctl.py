@@ -156,6 +156,54 @@ class Commands(unittest.TestCase):
         # Saved for the next start.
         self.assertEqual(len(cache.load_friends()["friends"]), len(friends))
 
+    def test_join_and_invite(self):
+        value = self.run_cmd("friends")
+        friends = {f["accountid"]: f for f in value["friends"]}
+        self.assertEqual(friends["1001"]["join"], "steam://joinlobby/548430/90071992547409/76561197960266729")
+        self.assertEqual(friends["1010"]["join"], "steam://rungame/892970/76561197960266738/%2Bconnect%20203.0.113.7%3A27015")
+        self.assertEqual(friends["1003"]["join"], "")
+        self.assertEqual(value["self"], {"appid": 548430, "game": "Deep Rock Galactic"})
+        self.assertEqual(self.run_cmd("invite", "1002"), "invited")
+        with open(self.world) as f:
+            self.assertEqual(json.load(f)["invites"], [{"to": 1002, "appid": 548430, "lobby": "90071992547410"}])
+        self.assertRaises(RuntimeError, self.run_cmd, "invite", "999")
+        self.assertRaises(ValueError, self.run_cmd, "invite", "1); x(")
+
+    def test_events(self):
+        value = self.run_cmd("events")
+        self.assertEqual(value["error"], "")
+        texts = [e["text"] for e in value["events"]]
+        # Newest first, and no chat messages.
+        self.assertEqual(texts, [
+            "%s and 2 more from your wishlist are on sale" % demo.name_of(1145360),
+            "Kes commented",
+            "Gravel Gus sent you a friend invite",
+            "3 new items in your inventory",
+            "You're invited to the %s playtest" % demo.name_of(892970),
+        ])
+        comment = value["events"][1]
+        self.assertEqual((comment["kind"], comment["detail"], comment["accountid"]),
+                         ("comment", "gg last night, that last drop was wild", "1002"))
+        self.assertEqual(value["events"][3]["detail"], "Deep Rock Galactic")
+
+    def test_events_are_kept_when_steam_is_gone(self):
+        self.run_cmd("events")
+        with mock.patch.object(steamctl, "evaluate", side_effect=OSError("refused")):
+            value = self.run_cmd("events")
+        self.assertEqual(value["error"], "Can't reach Steam. Is it running?")
+        self.assertEqual(len(value["events"]), 5)
+
+    def test_friend_changes_join_the_events(self):
+        self.run_cmd("friends")
+        with open(self.world) as f:
+            world = json.load(f)
+        next(f for f in world["friends"] if f["accountid"] == 1002).update(state="in-game", appid=553850)
+        with open(self.world, "w") as f:
+            json.dump(world, f)
+        self.run_cmd("friends")
+        playing = [e for e in self.run_cmd("events")["events"] if e["kind"] == "playing"]
+        self.assertEqual([e["text"] for e in playing], ["Kes started playing HELLDIVERS 2"])
+
     def test_groups_most_recent_first(self):
         groups = self.run_cmd("groups")
         self.assertEqual([g["name"] for g in groups], ["Deep Rock Diggers", "Weekend LAN", "Speedrun Club"])
